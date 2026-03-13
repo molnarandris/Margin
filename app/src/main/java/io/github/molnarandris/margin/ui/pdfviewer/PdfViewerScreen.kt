@@ -127,33 +127,50 @@ fun PdfViewerScreen(
                                         if (wasMultiTouch) {
                                             val zoomChange = event.calculateZoom()
                                             val panChange = event.calculatePan()
-                                            val centroid = event.calculateCentroid(useCurrent = false)
 
-                                            val newScale = (scale * zoomChange).coerceIn(0.5f, 5f)
-                                            val actualZoom = newScale / scale
+                                            val touches = event.changes.filter { it.pressed }
+                                            val span = if (touches.size >= 2)
+                                                (touches[0].position - touches[1].position).getDistance()
+                                            else Float.MAX_VALUE
 
-                                            val contentLeft = screenWidthPx * (1f - scale) / 2f + offsetX
-                                            val newContentLeft = centroid.x * (1f - actualZoom) +
-                                                    contentLeft * actualZoom + panChange.x
-                                            val rawOffsetX = newContentLeft - screenWidthPx * (1f - newScale) / 2f
+                                            val spanChangePx = span * kotlin.math.abs(zoomChange - 1f)
+                                            if (spanChangePx > 8f) {
+                                                // Pinch-to-zoom: apply zoom and keep centroid fixed
+                                                val centroid = event.calculateCentroid(useCurrent = false)
 
-                                            scale = newScale
-                                            offsetX = if (newScale > 1f) {
-                                                val maxOffsetX = marginPx + screenWidthPx * (newScale - 1f) / 2f
-                                                rawOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
-                                            } else 0f
+                                                val newScale = (scale * zoomChange).coerceIn(0.5f, 5f)
+                                                val actualZoom = newScale / scale
 
-                                            // Keep the centroid fixed vertically.
-                                            // LazyColumn anchors the first visible item's top;
-                                            // all content below it scales by actualZoom.
-                                            // The point at centroid.y is (centroid.y - anchorY)
-                                            // below the anchor, so it moves by that distance
-                                            // times (actualZoom - 1). Also apply two-finger
-                                            // vertical pan via panChange.y.
-                                            val anchorY = lazyListState.layoutInfo
-                                                .visibleItemsInfo.firstOrNull()?.offset?.toFloat() ?: 0f
-                                            val scrollDelta = (centroid.y - anchorY) * (actualZoom - 1f) - panChange.y
-                                            lazyListState.dispatchRawDelta(scrollDelta)
+                                                val contentLeft = screenWidthPx * (1f - scale) / 2f + offsetX
+                                                val newContentLeft = centroid.x * (1f - actualZoom) +
+                                                        contentLeft * actualZoom + panChange.x
+                                                val rawOffsetX = newContentLeft - screenWidthPx * (1f - newScale) / 2f
+
+                                                scale = newScale
+                                                offsetX = if (newScale > 1f) {
+                                                    val maxOffsetX = marginPx + screenWidthPx * (newScale - 1f) / 2f
+                                                    rawOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
+                                                } else 0f
+
+                                                // Keep the centroid fixed vertically.
+                                                // LazyColumn anchors the first visible item's top;
+                                                // all content below it scales by actualZoom.
+                                                // The point at centroid.y is (centroid.y - anchorY)
+                                                // below the anchor, so it moves by that distance
+                                                // times (actualZoom - 1). Also apply two-finger
+                                                // vertical pan via panChange.y.
+                                                val anchorY = lazyListState.layoutInfo
+                                                    .visibleItemsInfo.firstOrNull()?.offset?.toFloat() ?: 0f
+                                                val scrollDelta = (centroid.y - anchorY) * (actualZoom - 1f) - panChange.y
+                                                lazyListState.dispatchRawDelta(scrollDelta)
+                                            } else {
+                                                // Pure two-finger scroll: pan only, no zoom
+                                                offsetX = if (scale > 1f) {
+                                                    val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
+                                                    (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                                } else 0f
+                                                lazyListState.dispatchRawDelta(-panChange.y)
+                                            }
                                         }
                                         wasMultiTouch = true
                                         event.changes.forEach { it.consume() }
