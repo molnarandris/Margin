@@ -38,6 +38,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,7 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun PdfViewerScreen(
     dirUri: Uri,
@@ -102,6 +105,15 @@ fun PdfViewerScreen(
                 var scale by remember { mutableFloatStateOf(1f) }
                 var offsetX by remember { mutableFloatStateOf(0f) }
                 val lazyListState = rememberLazyListState()
+
+                LaunchedEffect(Unit) {
+                    snapshotFlow { scale to lazyListState.firstVisibleItemIndex }
+                        .debounce(300)
+                        .collect { (currentScale, _) ->
+                            val visibleIndices = lazyListState.layoutInfo.visibleItemsInfo.map { it.index }
+                            viewModel.updateRenderScale(currentScale, visibleIndices)
+                        }
+                }
 
                 val density = LocalDensity.current
                 val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
