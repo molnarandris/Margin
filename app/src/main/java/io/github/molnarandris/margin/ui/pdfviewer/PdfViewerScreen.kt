@@ -1,6 +1,8 @@
 package io.github.molnarandris.margin.ui.pdfviewer
 
+import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -8,6 +10,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -36,25 +39,33 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.roundToInt
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
@@ -102,9 +113,13 @@ fun PdfViewerScreen(
             }
 
             is PdfViewerUiState.Ready -> {
+                data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
                 var scale by remember { mutableFloatStateOf(1f) }
                 var offsetX by remember { mutableFloatStateOf(0f) }
+                var destinationHighlight by remember { mutableStateOf<DestinationHighlight?>(null) }
                 val lazyListState = rememberLazyListState()
+                val coroutineScope = rememberCoroutineScope()
+                val context = LocalContext.current
 
                 LaunchedEffect(Unit) {
                     snapshotFlow { scale to lazyListState.firstVisibleItemIndex }
@@ -204,18 +219,76 @@ fun PdfViewerScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
-                        itemsIndexed(state.pages) { index, bitmap ->
+                        itemsIndexed(state.pages) { index, page ->
+                            var pageSize by remember { mutableStateOf(IntSize.Zero) }
                             Card(
                                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                                 shape = RectangleShape,
                                 colors = CardDefaults.cardColors(containerColor = Color.White)
                             ) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = "Page ${index + 1}",
-                                    contentScale = ContentScale.FillWidth,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                Box {
+                                    Image(
+                                        bitmap = page.bitmap.asImageBitmap(),
+                                        contentDescription = "Page ${index + 1}",
+                                        contentScale = ContentScale.FillWidth,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .onSizeChanged { pageSize = it }
+                                            .pointerInput(page.links) {
+                                                detectTapGestures { tapOffset ->
+                                                    if (pageSize == IntSize.Zero) return@detectTapGestures
+                                                    val pdfX = tapOffset.x / pageSize.width * page.nativeWidth
+                                                    val pdfY = tapOffset.y / pageSize.height * page.nativeHeight
+                                                    val hit = page.links.firstOrNull { link ->
+                                                        link.bounds.any { rect -> rect.contains(pdfX, pdfY) }
+                                                    }
+                                                    when (val target = hit?.target) {
+                                                        is LinkTarget.Url -> context.startActivity(
+                                                            Intent(Intent.ACTION_VIEW, target.uri)
+                                                        )
+                                                        is LinkTarget.Goto -> coroutineScope.launch {
+                                                            // Displayed page dimensions at current scale
+                                                            val displayedPageWidth = screenWidthPx * scale - 2 * marginPx
+                                                            val displayedPageHeight = displayedPageWidth * page.nativeHeight / page.nativeWidth
+
+                                                            // Center destination X: solve for offsetX so
+                                                            // the target X lands at screenWidthPx / 2
+                                                            val destXPx = target.x / page.nativeWidth * displayedPageWidth
+                                                            val newOffsetX = screenWidthPx * scale / 2f - marginPx - destXPx
+                                                            val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
+                                                            offsetX = if (scale > 1f) newOffsetX.coerceIn(-maxOffsetX, maxOffsetX) else 0f
+
+                                                            // Center destination Y: scroll so destY is
+                                                            // at viewport center
+                                                            val destYPx = target.y / page.nativeHeight * displayedPageHeight
+                                                            val viewportHeight = lazyListState.layoutInfo.viewportSize.height
+                                                            val scrollOffset = (destYPx - viewportHeight / 2f).coerceAtLeast(0f).roundToInt()
+                                                            lazyListState.animateScrollToItem(target.pageNumber, scrollOffset)
+
+                                                            if (!target.x.isNaN() && !target.y.isNaN()) {
+                                                                destinationHighlight = DestinationHighlight(target.pageNumber, target.x, target.y)
+                                                                delay(500)
+                                                                destinationHighlight = null
+                                                            }
+                                                        }
+                                                        null -> {}
+                                                    }
+                                                }
+                                            }
+                                    )
+                                    val highlight = destinationHighlight
+                                    if (highlight != null && highlight.pageIndex == index && pageSize != IntSize.Zero) {
+                                        Canvas(modifier = Modifier.matchParentSize()) {
+                                            val cx = highlight.x / page.nativeWidth * size.width
+                                            val cy = highlight.y / page.nativeHeight * size.height
+                                            drawCircle(
+                                                color = Color(0x66FF3333),
+                                                radius = 24.dp.toPx(),
+                                                center = Offset(cx, cy)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

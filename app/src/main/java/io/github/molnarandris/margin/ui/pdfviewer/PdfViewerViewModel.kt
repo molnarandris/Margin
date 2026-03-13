@@ -2,6 +2,7 @@ package io.github.molnarandris.margin.ui.pdfviewer
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -18,9 +19,23 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+sealed class LinkTarget {
+    data class Url(val uri: Uri) : LinkTarget()
+    data class Goto(val pageNumber: Int, val x: Float, val y: Float, val zoom: Float) : LinkTarget()
+}
+
+data class PdfLink(val bounds: List<RectF>, val target: LinkTarget)
+
+data class PdfPage(
+    val bitmap: Bitmap,
+    val nativeWidth: Int,
+    val nativeHeight: Int,
+    val links: List<PdfLink>
+)
+
 sealed class PdfViewerUiState {
     object Loading : PdfViewerUiState()
-    data class Ready(val pages: List<Bitmap>) : PdfViewerUiState()
+    data class Ready(val pages: List<PdfPage>) : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
 }
 
@@ -63,7 +78,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 Bitmap.Config.ARGB_8888
                             )
                             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            newPages[index] = bitmap
+                            newPages[index] = newPages[index].copy(bitmap = bitmap)
                         }
                     }
                 }
@@ -97,7 +112,17 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 Bitmap.Config.ARGB_8888
                             )
                             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            bitmap
+
+                            val links = mutableListOf<PdfLink>()
+                            page.getLinkContents().forEach { link ->
+                                links.add(PdfLink(link.bounds, LinkTarget.Url(link.uri)))
+                            }
+                            page.getGotoLinks().forEach { link ->
+                                val dest = link.destination
+                                links.add(PdfLink(link.bounds, LinkTarget.Goto(dest.pageNumber, dest.xCoordinate, dest.yCoordinate, dest.zoom)))
+                            }
+
+                            PdfPage(bitmap, page.width, page.height, links)
                         }
                     }
                     PdfViewerUiState.Ready(pages)
