@@ -3,11 +3,13 @@ package io.github.molnarandris.margin.ui.pdfviewer
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Card
@@ -40,7 +43,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -95,37 +101,76 @@ fun PdfViewerScreen(
             is PdfViewerUiState.Ready -> {
                 var scale by remember { mutableFloatStateOf(1f) }
                 var offsetX by remember { mutableFloatStateOf(0f) }
+                val lazyListState = rememberLazyListState()
 
-                BoxWithConstraints(
+                val density = LocalDensity.current
+                val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+                val marginPx = with(density) { 8.dp.toPx() }
+                val contentWidthDp = with(density) { (screenWidthPx * scale).toDp() }
+
+                // PointerEventPass.Initial runs root→leaf, before the LazyColumn's
+                // scroll (Main pass). We consume 2-finger events here so the
+                // LazyColumn never sees them. Single-finger events are left
+                // unconsumed so the LazyColumn's scroll works normally.
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
                         .background(Color(0xFFE0E0E0))
-                ) {
-                    val screenWidthPx = constraints.maxWidth.toFloat()
-                    val marginPx = with(LocalDensity.current) { 8.dp.toPx() }
+                        .pointerInput(screenWidthPx, marginPx) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                var wasMultiTouch = false
+                                do {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    if (event.changes.count { it.pressed } >= 2) {
+                                        if (wasMultiTouch) {
+                                            val zoomChange = event.calculateZoom()
+                                            val panChange = event.calculatePan()
+                                            val centroid = event.calculateCentroid(useCurrent = false)
 
-                    val transformableState = rememberTransformableState { zoomChange, offsetChange, _ ->
-                        val newScale = (scale * zoomChange).coerceIn(0.5f, 5f)
-                        scale = newScale
-                        offsetX = if (newScale > 1f) {
-                            // max offset so the content edge is at most marginPx inside the screen
-                            val maxOffsetX = marginPx + screenWidthPx * (newScale - 1f) / 2f
-                            (offsetX + offsetChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                        } else {
-                            0f
+                                            val newScale = (scale * zoomChange).coerceIn(0.5f, 5f)
+                                            val actualZoom = newScale / scale
+
+                                            val contentLeft = screenWidthPx * (1f - scale) / 2f + offsetX
+                                            val newContentLeft = centroid.x * (1f - actualZoom) +
+                                                    contentLeft * actualZoom + panChange.x
+                                            val rawOffsetX = newContentLeft - screenWidthPx * (1f - newScale) / 2f
+
+                                            scale = newScale
+                                            offsetX = if (newScale > 1f) {
+                                                val maxOffsetX = marginPx + screenWidthPx * (newScale - 1f) / 2f
+                                                rawOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
+                                            } else 0f
+
+                                            // Keep the centroid fixed vertically.
+                                            // LazyColumn anchors the first visible item's top;
+                                            // all content below it scales by actualZoom.
+                                            // The point at centroid.y is (centroid.y - anchorY)
+                                            // below the anchor, so it moves by that distance
+                                            // times (actualZoom - 1). Also apply two-finger
+                                            // vertical pan via panChange.y.
+                                            val anchorY = lazyListState.layoutInfo
+                                                .visibleItemsInfo.firstOrNull()?.offset?.toFloat() ?: 0f
+                                            val scrollDelta = (centroid.y - anchorY) * (actualZoom - 1f) - panChange.y
+                                            lazyListState.dispatchRawDelta(scrollDelta)
+                                        }
+                                        wasMultiTouch = true
+                                        event.changes.forEach { it.consume() }
+                                    } else {
+                                        wasMultiTouch = false
+                                    }
+                                } while (event.changes.any { it.pressed })
+                            }
                         }
-                    }
-
-                    val contentWidthDp = with(LocalDensity.current) { (screenWidthPx * scale).toDp() }
-
+                ) {
                     LazyColumn(
+                        state = lazyListState,
                         modifier = Modifier
                             .requiredWidth(contentWidthDp)
                             .fillMaxHeight()
                             .align(Alignment.TopCenter)
-                            .offset { IntOffset(offsetX.roundToInt(), 0) }
-                            .transformable(state = transformableState),
+                            .offset { IntOffset(offsetX.roundToInt(), 0) },
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
