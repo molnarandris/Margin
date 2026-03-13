@@ -134,7 +134,8 @@ fun PdfViewerScreen(
                                             else Float.MAX_VALUE
 
                                             val spanChangePx = span * kotlin.math.abs(zoomChange - 1f)
-                                            if (spanChangePx > 8f) {
+                                            val closeFingers = span < 250f
+                                            if (!closeFingers || spanChangePx > 8f) {
                                                 // Pinch-to-zoom: apply zoom and keep centroid fixed
                                                 val centroid = event.calculateCentroid(useCurrent = false)
 
