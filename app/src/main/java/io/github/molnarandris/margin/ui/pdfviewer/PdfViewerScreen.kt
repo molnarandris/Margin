@@ -60,6 +60,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.roundToInt
 import kotlinx.coroutines.FlowPreview
@@ -114,12 +115,25 @@ fun PdfViewerScreen(
 
             is PdfViewerUiState.Ready -> {
                 data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
+                data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
                 var scale by remember { mutableFloatStateOf(1f) }
                 var offsetX by remember { mutableFloatStateOf(0f) }
                 var destinationHighlight by remember { mutableStateOf<DestinationHighlight?>(null) }
+                var jumpOrigin by remember { mutableStateOf<JumpOrigin?>(null) }
                 val lazyListState = rememberLazyListState()
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
+
+                BackHandler(enabled = jumpOrigin != null) {
+                    val origin = jumpOrigin!!
+                    jumpOrigin = null
+                    coroutineScope.launch {
+                        lazyListState.scrollToItem(origin.pageIndex, origin.scrollOffset)
+                        destinationHighlight = DestinationHighlight(origin.pageIndex, origin.highlightX, origin.highlightY)
+                        delay(500)
+                        destinationHighlight = null
+                    }
+                }
 
                 LaunchedEffect(Unit) {
                     snapshotFlow { scale to lazyListState.firstVisibleItemIndex }
@@ -247,6 +261,15 @@ fun PdfViewerScreen(
                                                             Intent(Intent.ACTION_VIEW, target.uri)
                                                         )
                                                         is LinkTarget.Goto -> coroutineScope.launch {
+                                                            // Record origin for back navigation
+                                                            val rect = hit.bounds.first()
+                                                            jumpOrigin = JumpOrigin(
+                                                                pageIndex = lazyListState.firstVisibleItemIndex,
+                                                                scrollOffset = lazyListState.firstVisibleItemScrollOffset,
+                                                                highlightX = rect.centerX(),
+                                                                highlightY = rect.centerY()
+                                                            )
+
                                                             // Displayed page dimensions at current scale
                                                             val displayedPageWidth = screenWidthPx * scale - 2 * marginPx
                                                             val displayedPageHeight = displayedPageWidth * page.nativeHeight / page.nativeWidth
