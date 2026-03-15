@@ -9,6 +9,14 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
+import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
+import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.text.TextPosition
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,17 +34,58 @@ sealed class LinkTarget {
 
 data class PdfLink(val bounds: List<RectF>, val target: LinkTarget)
 
+data class TextWord(
+    val text: String,
+    val bounds: RectF   // PR space (top-left origin)
+)
+
+data class PdfHighlight(
+    val pageIndex: Int,
+    val bounds: List<RectF>,    // PR space; one rect per line
+    val annotationIndex: Int    // index in PDPage.annotations list
+)
+
 data class PdfPage(
     val bitmap: Bitmap,
     val nativeWidth: Int,
     val nativeHeight: Int,
-    val links: List<PdfLink>
+    val links: List<PdfLink>,
+    val words: List<TextWord>,
+    val highlights: List<PdfHighlight>
 )
 
 sealed class PdfViewerUiState {
     object Loading : PdfViewerUiState()
     data class Ready(val pages: List<PdfPage>) : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
+}
+
+private class WordExtractor : PDFTextStripper() {
+    val words = mutableListOf<TextWord>()
+    private val currentWordChars = mutableListOf<TextPosition>()
+
+    override fun writeString(text: String, positions: List<TextPosition>) {
+        for (pos in positions) {
+            if (pos.unicode.isBlank()) {
+                flushWord()
+            } else {
+                currentWordChars.add(pos)
+            }
+        }
+        flushWord()
+    }
+
+    private fun flushWord() {
+        if (currentWordChars.isEmpty()) return
+        val text = currentWordChars.joinToString("") { it.unicode }
+        val left  = currentWordChars.minOf { it.x }
+        val right = currentWordChars.maxOf { it.x + it.width }
+        // TextPosition.getY() is already in screen space (Y down from top of page).
+        val top    = currentWordChars.minOf { it.y }
+        val bottom = currentWordChars.maxOf { it.y + it.height }
+        words.add(TextWord(text, RectF(left, top, right, bottom)))
+        currentWordChars.clear()
+    }
 }
 
 class PdfViewerViewModel(application: Application) : AndroidViewModel(application) {
@@ -49,6 +98,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val renderMutex = Mutex()
     private var rerenderJob: Job? = null
     private var currentRenderScale = 2f
+    private var docUri: Uri? = null
 
     fun loadPdf(dirUri: Uri, docId: String) {
         rerenderJob?.cancel()
@@ -87,12 +137,174 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun addHighlight(pageIndex: Int, selectedWords: List<TextWord>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val pdPage = pdDoc.getPage(pageIndex)
+                val pageH = pdPage.mediaBox.height
+
+                val sortedWords = selectedWords.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+                val lines = groupIntoLines(sortedWords)
+                val quads = FloatArray(lines.size * 8)
+                lines.forEachIndexed { i, lineWords ->
+                    val left  = lineWords.minOf { it.bounds.left }
+                    val right = lineWords.maxOf { it.bounds.right }
+                    val prTop = lineWords.minOf { it.bounds.top }
+                    val prBot = lineWords.maxOf { it.bounds.bottom }
+                    val pbTop = pageH - prTop
+                    val pbBot = pageH - prBot
+                    val base = i * 8
+                    quads[base+0] = left;  quads[base+1] = pbTop
+                    quads[base+2] = right; quads[base+3] = pbTop
+                    quads[base+4] = left;  quads[base+5] = pbBot
+                    quads[base+6] = right; quads[base+7] = pbBot
+                }
+                val allLeft  = selectedWords.minOf { it.bounds.left }
+                val allTop   = selectedWords.minOf { it.bounds.top }
+                val allRight = selectedWords.maxOf { it.bounds.right }
+                val allBot   = selectedWords.maxOf { it.bounds.bottom }
+                val ann = PDAnnotationTextMarkup(PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT).apply {
+                    quadPoints = quads
+                    color = PDColor(floatArrayOf(1f, 1f, 0f), PDDeviceRGB.INSTANCE)
+                    rectangle = PDRectangle(allLeft, pageH - allBot, allRight - allLeft, allBot - allTop)
+                }
+                pdPage.annotations.add(ann)
+
+                app.contentResolver.openOutputStream(uri)!!.use { pdDoc.save(it) }
+                pdDoc.close()
+
+                reloadPage(uri, app, pageIndex)
+            }
+        }
+    }
+
+    fun deleteHighlight(highlight: PdfHighlight) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val pdPage = pdDoc.getPage(highlight.pageIndex)
+                val annotations = pdPage.annotations
+                if (highlight.annotationIndex in annotations.indices) {
+                    annotations.removeAt(highlight.annotationIndex)
+                }
+                app.contentResolver.openOutputStream(uri)!!.use { pdDoc.save(it) }
+                pdDoc.close()
+
+                reloadPage(uri, app, highlight.pageIndex)
+            }
+        }
+    }
+
+    private fun groupIntoLines(words: List<TextWord>): List<List<TextWord>> {
+        if (words.isEmpty()) return emptyList()
+        val threshold = words.map { it.bounds.height() }.average().toFloat() * 0.5f
+        val lines = mutableListOf<MutableList<TextWord>>()
+        for (word in words) {
+            val line = lines.firstOrNull { kotlin.math.abs(it.first().bounds.top - word.bounds.top) < threshold }
+            if (line != null) line.add(word) else lines.add(mutableListOf(word))
+        }
+        return lines
+    }
+
+    // Must be called while renderMutex is held and renderer/pfd are closed
+    private suspend fun reloadPage(uri: Uri, app: Application, pageIndex: Int) {
+        val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
+        pfd = newPfd
+        val newRenderer = PdfRenderer(newPfd)
+        renderer = newRenderer
+
+        val state = _uiState.value as? PdfViewerUiState.Ready ?: return
+        val newPages = state.pages.toMutableList()
+
+        // Re-render bitmap
+        newRenderer.openPage(pageIndex).use { page ->
+            val scale = currentRenderScale
+            val bitmap = Bitmap.createBitmap(
+                (page.width * scale).toInt(),
+                (page.height * scale).toInt(),
+                Bitmap.Config.ARGB_8888
+            )
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+            // Re-extract words and highlights
+            val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+            val words = extractWords(pdDoc, pageIndex)
+            val highlights = extractHighlights(pdDoc, pageIndex, page.height.toFloat())
+            pdDoc.close()
+
+            newPages[pageIndex] = newPages[pageIndex].copy(
+                bitmap = bitmap,
+                words = words,
+                highlights = highlights
+            )
+        }
+
+        withContext(Dispatchers.Main) {
+            _uiState.value = PdfViewerUiState.Ready(newPages)
+        }
+    }
+
+    private fun extractWords(pdDoc: PDDocument, pageIndex: Int): List<TextWord> {
+        return try {
+            val extractor = WordExtractor()
+            extractor.startPage = pageIndex + 1
+            extractor.endPage   = pageIndex + 1
+            extractor.getText(pdDoc)
+            extractor.words.toList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun extractHighlights(pdDoc: PDDocument, pageIndex: Int, pageHeight: Float): List<PdfHighlight> {
+        return try {
+            val pdPage = pdDoc.getPage(pageIndex)
+            // Keep the real index into pdPage.annotations so deletion removes the right entry
+            pdPage.annotations
+                .mapIndexed { realIdx, ann -> realIdx to ann }
+                .filter { (_, ann) ->
+                    ann is PDAnnotationTextMarkup &&
+                    (ann as PDAnnotationTextMarkup).subtype == PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT
+                }
+                .map { (realIdx, ann) ->
+                    ann as PDAnnotationTextMarkup
+                    val quads = ann.quadPoints ?: floatArrayOf()
+                    val rects = quads.toList().chunked(8).mapNotNull { q ->
+                        if (q.size < 8) return@mapNotNull null
+                        val minX  = minOf(q[0], q[2], q[4], q[6])
+                        val maxX  = maxOf(q[0], q[2], q[4], q[6])
+                        val pbTop = maxOf(q[1], q[3], q[5], q[7])
+                        val pbBot = minOf(q[1], q[3], q[5], q[7])
+                        RectF(minX, pageHeight - pbTop, maxX, pageHeight - pbBot)
+                    }
+                    PdfHighlight(pageIndex, rects, realIdx)
+                }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     private suspend fun renderPages(dirUri: Uri, docId: String): PdfViewerUiState =
         withContext(Dispatchers.IO) {
             try {
                 val app = getApplication<Application>()
-                val docUri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
-                val newPfd = app.contentResolver.openFileDescriptor(docUri, "r")
+                PDFBoxResourceLoader.init(app)
+
+                val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
+                this@PdfViewerViewModel.docUri = uri
+
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r")
                     ?: return@withContext PdfViewerUiState.Error("Could not open file")
 
                 pfd?.close()
@@ -101,6 +313,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val newRenderer = PdfRenderer(newPfd)
                 renderer = newRenderer
                 currentRenderScale = 2f
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
 
                 renderMutex.withLock {
                     val pages = (0 until newRenderer.pageCount).map { index ->
@@ -122,9 +336,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 links.add(PdfLink(link.bounds, LinkTarget.Goto(dest.pageNumber, dest.xCoordinate, dest.yCoordinate, dest.zoom)))
                             }
 
-                            PdfPage(bitmap, page.width, page.height, links)
+                            val words = extractWords(pdDoc, index)
+                            val highlights = extractHighlights(pdDoc, index, page.height.toFloat())
+
+                            PdfPage(bitmap, page.width, page.height, links, words, highlights)
                         }
                     }
+                    pdDoc.close()
                     PdfViewerUiState.Ready(pages)
                 }
             } catch (e: Exception) {
