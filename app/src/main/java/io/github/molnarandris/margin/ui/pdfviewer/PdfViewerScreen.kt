@@ -367,15 +367,12 @@ fun PdfViewerScreen(
                                     if (page.highlights.isNotEmpty()) {
                                         Canvas(modifier = Modifier.matchParentSize()) {
                                             page.highlights.forEach { h ->
-                                                val matchedWords = page.words.filter { w ->
-                                                    h.bounds.any { r -> android.graphics.RectF.intersects(r, w.bounds) }
-                                                }
-                                                groupIntoLines(matchedWords).forEach { lineWords ->
-                                                    val l = lineWords.minOf { it.bounds.left }                     / page.nativeWidth  * size.width
-                                                    val t = lineWords.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
-                                                    val r = lineWords.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
-                                                    val b = lineWords.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
-                                                    drawRect(Color(0x66FFD700), Offset(l, t), Size(r - l, b - t))
+                                                h.bounds.forEach { r ->
+                                                    val l = r.left   / page.nativeWidth  * size.width
+                                                    val t = r.top    / page.nativeHeight * size.height
+                                                    val rr = r.right  / page.nativeWidth  * size.width
+                                                    val b = r.bottom / page.nativeHeight * size.height
+                                                    drawRect(Color(0x66FFD700), Offset(l, t), Size(rr - l, b - t))
                                                 }
                                             }
                                         }

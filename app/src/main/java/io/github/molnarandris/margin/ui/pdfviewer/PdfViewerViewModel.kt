@@ -153,26 +153,28 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val lines = groupIntoLines(sortedWords)
                 val quads = FloatArray(lines.size * 8)
                 lines.forEachIndexed { i, lineWords ->
-                    val left  = lineWords.minOf { it.bounds.left }
-                    val right = lineWords.maxOf { it.bounds.right }
-                    val prTop = lineWords.minOf { it.bounds.top }
-                    val prBot = lineWords.maxOf { it.bounds.bottom }
-                    val pbTop = pageH - prTop
-                    val pbBot = pageH - prBot
+                    val left        = lineWords.minOf { it.bounds.left }
+                    val right       = lineWords.maxOf { it.bounds.right }
+                    // bounds.top = visual bottom (baseline); bounds.top - height() = visual top
+                    // mirrors the canvas rendering formula exactly
+                    val prVisualTop = lineWords.minOf { it.bounds.top - it.bounds.height() }
+                    val prVisualBot = lineWords.maxOf { it.bounds.top }
+                    val pbTop = pageH - prVisualTop   // PDF Y-up: visual top → larger value
+                    val pbBot = pageH - prVisualBot   // PDF Y-up: visual bottom → smaller value
                     val base = i * 8
                     quads[base+0] = left;  quads[base+1] = pbTop
                     quads[base+2] = right; quads[base+3] = pbTop
                     quads[base+4] = left;  quads[base+5] = pbBot
                     quads[base+6] = right; quads[base+7] = pbBot
                 }
-                val allLeft  = selectedWords.minOf { it.bounds.left }
-                val allTop   = selectedWords.minOf { it.bounds.top }
-                val allRight = selectedWords.maxOf { it.bounds.right }
-                val allBot   = selectedWords.maxOf { it.bounds.bottom }
+                val allLeft      = selectedWords.minOf { it.bounds.left }
+                val allRight     = selectedWords.maxOf { it.bounds.right }
+                val allVisualTop = selectedWords.minOf { it.bounds.top - it.bounds.height() }
+                val allVisualBot = selectedWords.maxOf { it.bounds.top }
                 val ann = PDAnnotationTextMarkup(PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT).apply {
                     quadPoints = quads
                     color = PDColor(floatArrayOf(1f, 1f, 0f), PDDeviceRGB.INSTANCE)
-                    rectangle = PDRectangle(allLeft, pageH - allBot, allRight - allLeft, allBot - allTop)
+                    rectangle = PDRectangle(allLeft, pageH - allVisualBot, allRight - allLeft, allVisualBot - allVisualTop)
                 }
                 pdPage.annotations.add(ann)
 
