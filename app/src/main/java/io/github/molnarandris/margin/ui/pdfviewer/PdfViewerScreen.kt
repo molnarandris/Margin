@@ -51,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
@@ -372,7 +373,7 @@ fun PdfViewerScreen(
                                                     val t = r.top    / page.nativeHeight * size.height
                                                     val rr = r.right  / page.nativeWidth  * size.width
                                                     val b = r.bottom / page.nativeHeight * size.height
-                                                    drawRect(Color(0x66FFD700), Offset(l, t), Size(rr - l, b - t))
+                                                    drawRect(Color(0xFFFFF176), Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
                                                 }
                                             }
                                         }
@@ -383,9 +384,10 @@ fun PdfViewerScreen(
                                             val cx = highlight.x / page.nativeWidth * size.width
                                             val cy = highlight.y / page.nativeHeight * size.height
                                             drawCircle(
-                                                color = Color(0x66FF3333),
+                                                color = Color(0xFFFF9999),
                                                 radius = 24.dp.toPx(),
-                                                center = Offset(cx, cy)
+                                                center = Offset(cx, cy),
+                                                blendMode = BlendMode.Multiply
                                             )
                                         }
                                     }
@@ -402,7 +404,7 @@ fun PdfViewerScreen(
                                                 val t = lineWords.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
                                                 val r = lineWords.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
                                                 val b = lineWords.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
-                                                drawRect(Color(0x664499FF), Offset(l, t), Size(r - l, b - t))
+                                                drawRect(Color(0xFFBBDEFB), Offset(l, t), Size(r - l, b - t), blendMode = BlendMode.Multiply)
                                             }
                                             if (sel.existingHighlight == null) {
                                                 val firstWord = displayedWords.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left }))
@@ -454,10 +456,25 @@ fun PdfViewerScreen(
                                                         val cy = (w.bounds.top  + w.bounds.bottom) / 2f
                                                         (cx - prX) * (cx - prX) + (cy - prY) * (cy - prY)
                                                     } ?: continue
-                                                    dragWords = if (hitStart)
-                                                        wordsFrom(nearest, sel.selectedWords.last(), page.words)
-                                                    else
-                                                        wordsFrom(sel.selectedWords.first(), nearest, page.words)
+                                                    val lines = groupIntoLines(page.words)
+                                                    val nearestCX = nearest.bounds.centerX()
+                                                    dragWords = if (hitStart) {
+                                                        val endWord = sel.selectedWords.last()
+                                                        val endLineIdx = lines.indexOfFirst { line -> endWord in line }
+                                                        val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
+                                                        val clampedNearest = if (endLineIdx >= 0 && nearestLineIdx > endLineIdx)
+                                                            lines[endLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
+                                                        else nearest
+                                                        wordsFrom(clampedNearest, endWord, page.words)
+                                                    } else {
+                                                        val startWord = sel.selectedWords.first()
+                                                        val startLineIdx = lines.indexOfFirst { line -> startWord in line }
+                                                        val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
+                                                        val clampedNearest = if (startLineIdx >= 0 && nearestLineIdx < startLineIdx)
+                                                            lines[startLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
+                                                        else nearest
+                                                        wordsFrom(startWord, clampedNearest, page.words)
+                                                    }
                                                 } while (event.changes.any { it.pressed })
 
                                                 val committed = dragWords
