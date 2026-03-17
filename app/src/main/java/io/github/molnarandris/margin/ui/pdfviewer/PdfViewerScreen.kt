@@ -26,12 +26,17 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,9 +64,12 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -87,14 +95,68 @@ fun PdfViewerScreen(
     }
 
     val uiState by viewModel.uiState.collectAsState()
+    val searchState by viewModel.searchState.collectAsState()
+    var isSearchVisible by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    val searchFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(searchQuery) {
+        viewModel.search(searchQuery)
+    }
+
+    LaunchedEffect(isSearchVisible) {
+        if (isSearchVisible) {
+            searchFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("PDF Viewer") },
+                title = {
+                    if (isSearchVisible) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            placeholder = { Text("Search…") },
+                            modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester)
+                        )
+                    } else {
+                        Text("PDF Viewer")
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (isSearchVisible) {
+                        val matches = searchState.matches
+                        val currentIndex = searchState.currentIndex
+                        if (matches.isNotEmpty()) {
+                            Text("${currentIndex + 1} / ${matches.size}")
+                        }
+                        IconButton(onClick = { viewModel.prevMatch() }) {
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous match")
+                        }
+                        IconButton(onClick = { viewModel.nextMatch() }) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next match")
+                        }
+                        IconButton(onClick = {
+                            isSearchVisible = false
+                            searchQuery = ""
+                            viewModel.clearSearch()
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close search")
+                        }
+                    } else {
+                        IconButton(onClick = { isSearchVisible = true }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search")
+                        }
                     }
                 }
             )
@@ -194,6 +256,27 @@ fun PdfViewerScreen(
                 val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
                 val marginPx = with(density) { 8.dp.toPx() }
                 val contentWidthDp = with(density) { (screenWidthPx * scale).toDp() }
+
+                // Scroll to current search match (both vertical and horizontal)
+                LaunchedEffect(searchState.currentIndex) {
+                    val match = searchState.matches.getOrNull(searchState.currentIndex) ?: return@LaunchedEffect
+                    val page = state.pages.getOrNull(match.pageIndex) ?: return@LaunchedEffect
+                    val displayedPageWidth = screenWidthPx * scale - 2 * marginPx
+                    val displayedPageHeight = displayedPageWidth * page.nativeHeight / page.nativeWidth
+
+                    val matchCenterX = (match.wordBounds.minOf { it.left } + match.wordBounds.maxOf { it.right }) / 2f
+                    val matchCenterY = (match.wordBounds.minOf { it.top - it.height() } + match.wordBounds.maxOf { it.top }) / 2f
+
+                    val destXPx = matchCenterX / page.nativeWidth * displayedPageWidth
+                    val newOffsetX = screenWidthPx * scale / 2f - marginPx - destXPx
+                    val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
+                    offsetX = if (scale > 1f) newOffsetX.coerceIn(-maxOffsetX, maxOffsetX) else 0f
+
+                    val destYPx = matchCenterY / page.nativeHeight * displayedPageHeight
+                    val viewportHeight = lazyListState.layoutInfo.viewportSize.height
+                    val scrollOffset = (destYPx - viewportHeight / 2f).coerceAtLeast(0f).roundToInt()
+                    lazyListState.animateScrollToItem(match.pageIndex, scrollOffset)
+                }
 
                 Box(
                     modifier = Modifier
@@ -389,6 +472,25 @@ fun PdfViewerScreen(
                                                 center = Offset(cx, cy),
                                                 blendMode = BlendMode.Multiply
                                             )
+                                        }
+                                    }
+
+                                    // Search match highlights
+                                    val pageSearchMatches = searchState.matches.filter { it.pageIndex == index }
+                                    val currentMatch = searchState.matches.getOrNull(searchState.currentIndex)
+                                    if (pageSearchMatches.isNotEmpty()) {
+                                        Canvas(modifier = Modifier.matchParentSize()) {
+                                            pageSearchMatches.forEach { match ->
+                                                val isCurrent = (match === currentMatch)
+                                                val color = if (isCurrent) Color(0xFF00C853) else Color(0xFFB9F6CA)
+                                                match.wordBounds.forEach { r ->
+                                                    val l  = r.left                / page.nativeWidth  * size.width
+                                                    val t  = (r.top - r.height())  / page.nativeHeight * size.height
+                                                    val rr = r.right               / page.nativeWidth  * size.width
+                                                    val b  = r.top                 / page.nativeHeight * size.height
+                                                    drawRect(color, Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
+                                                }
+                                            }
                                         }
                                     }
 

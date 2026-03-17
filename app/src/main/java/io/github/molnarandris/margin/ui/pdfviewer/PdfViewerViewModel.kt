@@ -45,6 +45,16 @@ data class PdfHighlight(
     val annotationIndex: Int    // index in PDPage.annotations list
 )
 
+data class SearchMatch(
+    val pageIndex: Int,
+    val wordBounds: List<RectF>   // PR space, one rect per matching word
+)
+
+data class SearchState(
+    val matches: List<SearchMatch> = emptyList(),
+    val currentIndex: Int = -1    // -1 = no results
+)
+
 data class PdfPage(
     val bitmap: Bitmap,
     val nativeWidth: Int,
@@ -93,6 +103,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Loading)
     val uiState: StateFlow<PdfViewerUiState> = _uiState.asStateFlow()
 
+    private val _searchState = MutableStateFlow(SearchState())
+    val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
+
     private var pfd: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
     private val renderMutex = Mutex()
@@ -135,6 +148,62 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }
             _uiState.value = PdfViewerUiState.Ready(newPages)
         }
+    }
+
+    fun search(query: String) {
+        viewModelScope.launch(Dispatchers.Default) {
+            if (query.isBlank()) {
+                _searchState.value = SearchState()
+                return@launch
+            }
+            val pages = (_uiState.value as? PdfViewerUiState.Ready)?.pages ?: return@launch
+            val allMatches = mutableListOf<SearchMatch>()
+            val lowerQuery = query.lowercase()
+            for ((pageIndex, page) in pages.withIndex()) {
+                val words = page.words
+                if (words.isEmpty()) continue
+                // Build concatenated text with word char ranges
+                val wordRanges = mutableListOf<IntRange>()
+                val sb = StringBuilder()
+                for (word in words) {
+                    val start = sb.length
+                    sb.append(word.text)
+                    wordRanges.add(start until sb.length)
+                    sb.append(' ')
+                }
+                val text = sb.toString().lowercase()
+                var idx = 0
+                while (true) {
+                    val found = text.indexOf(lowerQuery, idx)
+                    if (found < 0) break
+                    val end = found + lowerQuery.length
+                    val matchBounds = words.indices
+                        .filter { i -> wordRanges[i].first < end && wordRanges[i].last >= found }
+                        .map { i -> words[i].bounds }
+                    if (matchBounds.isNotEmpty()) {
+                        allMatches.add(SearchMatch(pageIndex, matchBounds))
+                    }
+                    idx = found + 1
+                }
+            }
+            _searchState.value = SearchState(allMatches, if (allMatches.isEmpty()) -1 else 0)
+        }
+    }
+
+    fun nextMatch() {
+        val s = _searchState.value
+        if (s.matches.isEmpty()) return
+        _searchState.value = s.copy(currentIndex = (s.currentIndex + 1) % s.matches.size)
+    }
+
+    fun prevMatch() {
+        val s = _searchState.value
+        if (s.matches.isEmpty()) return
+        _searchState.value = s.copy(currentIndex = (s.currentIndex - 1 + s.matches.size) % s.matches.size)
+    }
+
+    fun clearSearch() {
+        _searchState.value = SearchState()
     }
 
     fun addHighlight(pageIndex: Int, selectedWords: List<TextWord>) {
