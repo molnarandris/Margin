@@ -66,9 +66,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -202,6 +204,7 @@ fun PdfViewerScreen(
                 val lazyListState = rememberLazyListState()
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
+                val clipboardManager = LocalClipboardManager.current
 
                 // Helper: group chars into lines by proximity of their top coordinates.
                 fun groupIntoLines(chars: List<TextChar>): List<List<TextChar>> {
@@ -630,6 +633,16 @@ fun PdfViewerScreen(
                                                                     textSelection = null
                                                                 }) { Text("Delete") }
                                                             }
+                                                            TextButton(onClick = {
+                                                                val selectedSet = sel.selectedChars.toHashSet()
+                                                                val text = page.words
+                                                                    .filter { w -> w.chars.any { it in selectedSet } }
+                                                                    .joinToString(" ") { w ->
+                                                                        w.chars.filter { it in selectedSet }.joinToString("") { it.text }
+                                                                    }
+                                                                clipboardManager.setText(AnnotatedString(text))
+                                                                textSelection = null
+                                                            }) { Text("Copy") }
                                                         }
                                                     }
                                                 }
