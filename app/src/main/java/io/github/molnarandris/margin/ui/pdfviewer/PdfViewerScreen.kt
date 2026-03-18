@@ -600,7 +600,7 @@ fun PdfViewerScreen(
                                         })
 
                                         if (displayedWords.isNotEmpty()) {
-                                            val selTopPR    = displayedWords.minOf { it.bounds.top }
+                                            val selTopPR    = displayedWords.minOf { it.bounds.top - it.bounds.height() }
                                             val selCenterX  = (displayedWords.minOf { it.bounds.left } + displayedWords.maxOf { it.bounds.right }) / 2f
                                             val popupLocalX = (selCenterX / page.nativeWidth  * pageSize.width.toFloat()).roundToInt()
                                             val popupLocalY = (selTopPR   / page.nativeHeight * pageSize.height.toFloat()).roundToInt()
