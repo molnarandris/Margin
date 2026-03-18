@@ -269,6 +269,7 @@ fun PdfViewerScreen(
                 var textSelection by remember { mutableStateOf<TextSelection?>(null) }
                 // Used during handle dragging so we don't update textSelection on every event
                 var dragChars by remember { mutableStateOf<List<TextChar>?>(null) }
+                var isDraggingHandle by remember { mutableStateOf(false) }
                 var popupHeightPx by remember { mutableStateOf(0) }
                 val currentSelectionRef = rememberUpdatedState(textSelection)
                 val lazyListState = rememberLazyListState()
@@ -369,6 +370,10 @@ fun PdfViewerScreen(
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = false)
                                 var wasMultiTouch = false
+                                var everMultiTouch = false
+                                var singleTouchAxis = 0  // 0 = undecided, 1 = horizontal, -1 = vertical
+                                var accumDx = 0f
+                                var accumDy = 0f
                                 do {
                                     val event = awaitPointerEvent(PointerEventPass.Initial)
                                     if (event.changes.count { it.pressed } >= 2) {
@@ -413,7 +418,29 @@ fun PdfViewerScreen(
                                             }
                                         }
                                         wasMultiTouch = true
+                                        everMultiTouch = true
+                                        singleTouchAxis = 0
                                         event.changes.forEach { it.consume() }
+                                    } else if (!everMultiTouch && !isDraggingHandle) {
+                                        // Single-finger: detect axis then handle horizontal scroll
+                                        val change = event.changes.firstOrNull()
+                                        if (change != null) {
+                                            val dx = change.position.x - change.previousPosition.x
+                                            val dy = change.position.y - change.previousPosition.y
+                                            if (singleTouchAxis == 0) {
+                                                accumDx += dx
+                                                accumDy += dy
+                                                val distSq = accumDx * accumDx + accumDy * accumDy
+                                                if (distSq > 64f) {  // 8px threshold
+                                                    singleTouchAxis = if (kotlin.math.abs(accumDx) > kotlin.math.abs(accumDy)) 1 else -1
+                                                }
+                                            }
+                                            if (singleTouchAxis == 1 && scale > 1f) {
+                                                val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
+                                                offsetX = (offsetX + dx).coerceIn(-maxOffsetX, maxOffsetX)
+                                                change.consume()
+                                            }
+                                        }
                                     } else {
                                         wasMultiTouch = false
                                     }
@@ -638,39 +665,43 @@ fun PdfViewerScreen(
                                                     return@awaitEachGesture
                                                 }
                                                 down.consume()
-
-                                                do {
-                                                    val event = awaitPointerEvent()
-                                                    event.changes.forEach { it.consume() }
-                                                    val pos = event.changes.firstOrNull()?.position ?: continue
-                                                    val prX = pos.x / pageSize.width.toFloat()  * page.nativeWidth
-                                                    val prY = pos.y / pageSize.height.toFloat() * page.nativeHeight
-                                                    val allChars = page.words.flatMap { it.chars }
-                                                    val nearest = allChars.minByOrNull { c ->
-                                                        val cx = (c.bounds.left + c.bounds.right) / 2f
-                                                        val cy = (c.bounds.top  + c.bounds.bottom) / 2f
-                                                        (cx - prX) * (cx - prX) + (cy - prY) * (cy - prY)
-                                                    } ?: continue
-                                                    val lines = groupIntoLines(allChars)
-                                                    val nearestCX = nearest.bounds.centerX()
-                                                    dragChars = if (hitStart) {
-                                                        val endChar = sel.selectedChars.last()
-                                                        val endLineIdx = lines.indexOfFirst { line -> endChar in line }
-                                                        val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
-                                                        val clampedNearest = if (endLineIdx >= 0 && nearestLineIdx > endLineIdx)
-                                                            lines[endLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
-                                                        else nearest
-                                                        charsFrom(clampedNearest, endChar, allChars)
-                                                    } else {
-                                                        val startChar = sel.selectedChars.first()
-                                                        val startLineIdx = lines.indexOfFirst { line -> startChar in line }
-                                                        val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
-                                                        val clampedNearest = if (startLineIdx >= 0 && nearestLineIdx < startLineIdx)
-                                                            lines[startLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
-                                                        else nearest
-                                                        charsFrom(startChar, clampedNearest, allChars)
-                                                    }
-                                                } while (event.changes.any { it.pressed })
+                                                isDraggingHandle = true
+                                                try {
+                                                    do {
+                                                        val event = awaitPointerEvent()
+                                                        event.changes.forEach { it.consume() }
+                                                        val pos = event.changes.firstOrNull()?.position ?: continue
+                                                        val prX = pos.x / pageSize.width.toFloat()  * page.nativeWidth
+                                                        val prY = pos.y / pageSize.height.toFloat() * page.nativeHeight
+                                                        val allChars = page.words.flatMap { it.chars }
+                                                        val nearest = allChars.minByOrNull { c ->
+                                                            val cx = (c.bounds.left + c.bounds.right) / 2f
+                                                            val cy = (c.bounds.top  + c.bounds.bottom) / 2f
+                                                            (cx - prX) * (cx - prX) + (cy - prY) * (cy - prY)
+                                                        } ?: continue
+                                                        val lines = groupIntoLines(allChars)
+                                                        val nearestCX = nearest.bounds.centerX()
+                                                        dragChars = if (hitStart) {
+                                                            val endChar = sel.selectedChars.last()
+                                                            val endLineIdx = lines.indexOfFirst { line -> endChar in line }
+                                                            val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
+                                                            val clampedNearest = if (endLineIdx >= 0 && nearestLineIdx > endLineIdx)
+                                                                lines[endLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
+                                                            else nearest
+                                                            charsFrom(clampedNearest, endChar, allChars)
+                                                        } else {
+                                                            val startChar = sel.selectedChars.first()
+                                                            val startLineIdx = lines.indexOfFirst { line -> startChar in line }
+                                                            val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
+                                                            val clampedNearest = if (startLineIdx >= 0 && nearestLineIdx < startLineIdx)
+                                                                lines[startLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
+                                                            else nearest
+                                                            charsFrom(startChar, clampedNearest, allChars)
+                                                        }
+                                                    } while (event.changes.any { it.pressed })
+                                                } finally {
+                                                    isDraggingHandle = false
+                                                }
 
                                                 val committed = dragChars
                                                 if (committed != null) {
