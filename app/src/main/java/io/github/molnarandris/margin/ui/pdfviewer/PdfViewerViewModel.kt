@@ -34,9 +34,12 @@ sealed class LinkTarget {
 
 data class PdfLink(val bounds: List<RectF>, val target: LinkTarget)
 
+data class TextChar(val text: String, val bounds: RectF)
+
 data class TextWord(
     val text: String,
-    val bounds: RectF   // PR space (top-left origin)
+    val bounds: RectF,   // PR space (top-left origin)
+    val chars: List<TextChar>
 )
 
 data class PdfHighlight(
@@ -88,12 +91,15 @@ private class WordExtractor : PDFTextStripper() {
     private fun flushWord() {
         if (currentWordChars.isEmpty()) return
         val text = currentWordChars.joinToString("") { it.unicode }
-        val left  = currentWordChars.minOf { it.x }
-        val right = currentWordChars.maxOf { it.x + it.width }
+        val left   = currentWordChars.minOf { it.x }
+        val right  = currentWordChars.maxOf { it.x + it.width }
         // TextPosition.getY() is already in screen space (Y down from top of page).
         val top    = currentWordChars.minOf { it.y }
         val bottom = currentWordChars.maxOf { it.y + it.height }
-        words.add(TextWord(text, RectF(left, top, right, bottom)))
+        val chars  = currentWordChars.map { pos ->
+            TextChar(pos.unicode, RectF(pos.x, pos.y, pos.x + pos.width, pos.y + pos.height))
+        }
+        words.add(TextWord(text, RectF(left, top, right, bottom), chars))
         currentWordChars.clear()
     }
 }
@@ -206,7 +212,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         _searchState.value = SearchState()
     }
 
-    fun addHighlight(pageIndex: Int, selectedWords: List<TextWord>) {
+    fun addHighlight(pageIndex: Int, selectedChars: List<TextChar>) {
         viewModelScope.launch(Dispatchers.IO) {
             val uri = docUri ?: return@launch
             val app = getApplication<Application>()
@@ -218,16 +224,16 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val pdPage = pdDoc.getPage(pageIndex)
                 val pageH = pdPage.mediaBox.height
 
-                val sortedWords = selectedWords.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-                val lines = groupIntoLines(sortedWords)
+                val sortedChars = selectedChars.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+                val lines = groupCharsIntoLines(sortedChars)
                 val quads = FloatArray(lines.size * 8)
-                lines.forEachIndexed { i, lineWords ->
-                    val left        = lineWords.minOf { it.bounds.left }
-                    val right       = lineWords.maxOf { it.bounds.right }
+                lines.forEachIndexed { i, lineChars ->
+                    val left        = lineChars.minOf { it.bounds.left }
+                    val right       = lineChars.maxOf { it.bounds.right }
                     // bounds.top = visual bottom (baseline); bounds.top - height() = visual top
                     // mirrors the canvas rendering formula exactly
-                    val prVisualTop = lineWords.minOf { it.bounds.top - it.bounds.height() }
-                    val prVisualBot = lineWords.maxOf { it.bounds.top }
+                    val prVisualTop = lineChars.minOf { it.bounds.top - it.bounds.height() }
+                    val prVisualBot = lineChars.maxOf { it.bounds.top }
                     val pbTop = pageH - prVisualTop   // PDF Y-up: visual top → larger value
                     val pbBot = pageH - prVisualBot   // PDF Y-up: visual bottom → smaller value
                     val base = i * 8
@@ -236,10 +242,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     quads[base+4] = left;  quads[base+5] = pbBot
                     quads[base+6] = right; quads[base+7] = pbBot
                 }
-                val allLeft      = selectedWords.minOf { it.bounds.left }
-                val allRight     = selectedWords.maxOf { it.bounds.right }
-                val allVisualTop = selectedWords.minOf { it.bounds.top - it.bounds.height() }
-                val allVisualBot = selectedWords.maxOf { it.bounds.top }
+                val allLeft      = selectedChars.minOf { it.bounds.left }
+                val allRight     = selectedChars.maxOf { it.bounds.right }
+                val allVisualTop = selectedChars.minOf { it.bounds.top - it.bounds.height() }
+                val allVisualBot = selectedChars.maxOf { it.bounds.top }
                 val ann = PDAnnotationTextMarkup(PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT).apply {
                     quadPoints = quads
                     color = PDColor(floatArrayOf(1f, 1f, 0f), PDDeviceRGB.INSTANCE)
@@ -277,13 +283,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun groupIntoLines(words: List<TextWord>): List<List<TextWord>> {
-        if (words.isEmpty()) return emptyList()
-        val threshold = words.map { it.bounds.height() }.average().toFloat() * 0.5f
-        val lines = mutableListOf<MutableList<TextWord>>()
-        for (word in words) {
-            val line = lines.firstOrNull { kotlin.math.abs(it.first().bounds.top - word.bounds.top) < threshold }
-            if (line != null) line.add(word) else lines.add(mutableListOf(word))
+    private fun groupCharsIntoLines(chars: List<TextChar>): List<List<TextChar>> {
+        if (chars.isEmpty()) return emptyList()
+        val threshold = chars.map { it.bounds.height() }.average().toFloat() * 0.5f
+        val lines = mutableListOf<MutableList<TextChar>>()
+        for (char in chars) {
+            val line = lines.firstOrNull { kotlin.math.abs(it.first().bounds.top - char.bounds.top) < threshold }
+            if (line != null) line.add(char) else lines.add(mutableListOf(char))
         }
         return lines
     }

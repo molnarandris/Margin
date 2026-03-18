@@ -186,7 +186,7 @@ fun PdfViewerScreen(
                 data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
                 data class TextSelection(
                     val pageIndex: Int,
-                    val selectedWords: List<TextWord>,
+                    val selectedChars: List<TextChar>,
                     val existingHighlight: PdfHighlight? = null
                 )
 
@@ -196,33 +196,33 @@ fun PdfViewerScreen(
                 var jumpOrigin by remember { mutableStateOf<JumpOrigin?>(null) }
                 var textSelection by remember { mutableStateOf<TextSelection?>(null) }
                 // Used during handle dragging so we don't update textSelection on every event
-                var dragWords by remember { mutableStateOf<List<TextWord>?>(null) }
+                var dragChars by remember { mutableStateOf<List<TextChar>?>(null) }
                 var popupHeightPx by remember { mutableStateOf(0) }
                 val currentSelectionRef = rememberUpdatedState(textSelection)
                 val lazyListState = rememberLazyListState()
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
 
-                // Helper: group words into lines by proximity of their top coordinates.
-                fun groupIntoLines(words: List<TextWord>): List<List<TextWord>> {
-                    if (words.isEmpty()) return emptyList()
-                    val threshold = words.map { it.bounds.height() }.average().toFloat() * 0.5f
-                    val lines = mutableListOf<MutableList<TextWord>>()
-                    for (word in words.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))) {
-                        val line = lines.firstOrNull { kotlin.math.abs(it.first().bounds.top - word.bounds.top) < threshold }
-                        if (line != null) line.add(word) else lines.add(mutableListOf(word))
+                // Helper: group chars into lines by proximity of their top coordinates.
+                fun groupIntoLines(chars: List<TextChar>): List<List<TextChar>> {
+                    if (chars.isEmpty()) return emptyList()
+                    val threshold = chars.map { it.bounds.height() }.average().toFloat() * 0.5f
+                    val lines = mutableListOf<MutableList<TextChar>>()
+                    for (char in chars.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))) {
+                        val line = lines.firstOrNull { kotlin.math.abs(it.first().bounds.top - char.bounds.top) < threshold }
+                        if (line != null) line.add(char) else lines.add(mutableListOf(char))
                     }
                     return lines
                 }
 
-                // Helper: words in PDFBox reading order between start and end (inclusive).
-                // allWords retains the extraction order, which handles multi-column correctly.
-                fun wordsFrom(start: TextWord, end: TextWord, allWords: List<TextWord>): List<TextWord> {
-                    val startIdx = allWords.indexOf(start).takeIf { it >= 0 } ?: return listOf(start)
-                    val endIdx = allWords.indexOf(end).takeIf { it >= 0 } ?: return listOf(end)
+                // Helper: chars in PDFBox reading order between start and end (inclusive).
+                // allChars retains the extraction order, which handles multi-column correctly.
+                fun charsFrom(start: TextChar, end: TextChar, allChars: List<TextChar>): List<TextChar> {
+                    val startIdx = allChars.indexOf(start).takeIf { it >= 0 } ?: return listOf(start)
+                    val endIdx   = allChars.indexOf(end).takeIf   { it >= 0 } ?: return listOf(end)
                     val lo = minOf(startIdx, endIdx)
                     val hi = maxOf(startIdx, endIdx)
-                    return allWords.subList(lo, hi + 1)
+                    return allChars.subList(lo, hi + 1)
                 }
 
                 BackHandler(enabled = jumpOrigin != null) {
@@ -431,17 +431,18 @@ fun PdfViewerScreen(
                                                             }
                                                         }
                                                         if (hitHighlight != null) {
-                                                            // TextWord.bounds uses non-standard coords: top=baseline, bottom=baseline+capHeight.
-                                                            // Visual region of word: [top-height(), top]. Match against highlight's [r.top, r.bottom].
-                                                            val hlWords = page.words.filter { w ->
+                                                            // TextChar.bounds uses non-standard coords: top=baseline, bottom=baseline+capHeight.
+                                                            // Visual region of char: [top-height(), top]. Match against highlight's [r.top, r.bottom].
+                                                            val allChars = page.words.flatMap { it.chars }
+                                                            val hlChars = allChars.filter { c ->
                                                                 hitHighlight.bounds.any { r ->
-                                                                    val wVisualTop = w.bounds.top - w.bounds.height()
-                                                                    val wVisualBot = w.bounds.top
-                                                                    w.bounds.right > r.left && w.bounds.left < r.right &&
-                                                                    wVisualBot > r.top && wVisualTop < r.bottom
+                                                                    val cVisualTop = c.bounds.top - c.bounds.height()
+                                                                    val cVisualBot = c.bounds.top
+                                                                    c.bounds.right > r.left && c.bounds.left < r.right &&
+                                                                    cVisualBot > r.top && cVisualTop < r.bottom
                                                                 }
                                                             }
-                                                            textSelection = TextSelection(index, hlWords, hitHighlight)
+                                                            textSelection = TextSelection(index, hlChars, hitHighlight)
                                                             return@detectTapGestures
                                                         }
 
@@ -452,7 +453,7 @@ fun PdfViewerScreen(
                                                             prY >= visualTop && prY <= w.bounds.bottom
                                                         }
                                                         if (hitWord != null) {
-                                                            textSelection = TextSelection(index, listOf(hitWord))
+                                                            textSelection = TextSelection(index, hitWord.chars)
                                                         }
                                                         // 3. No text → do nothing
                                                     }
@@ -509,26 +510,26 @@ fun PdfViewerScreen(
                                     // Blue selection overlay — rendered in page-local space so it zooms/scrolls with the page
                                     val sel = textSelection
                                     if (sel != null && sel.pageIndex == index) {
-                                        val displayedWords = dragWords ?: sel.selectedWords
-                                        val overlayWords = if (sel.existingHighlight != null) sel.selectedWords else displayedWords
+                                        val displayedChars = dragChars ?: sel.selectedChars
+                                        val overlayChars = if (sel.existingHighlight != null) sel.selectedChars else displayedChars
 
                                         Canvas(modifier = Modifier.matchParentSize()) {
-                                            groupIntoLines(overlayWords).forEach { lineWords ->
-                                                val l = lineWords.minOf { it.bounds.left }                     / page.nativeWidth  * size.width
-                                                val t = lineWords.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
-                                                val r = lineWords.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
-                                                val b = lineWords.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
+                                            groupIntoLines(overlayChars).forEach { lineChars ->
+                                                val l = lineChars.minOf { it.bounds.left }                     / page.nativeWidth  * size.width
+                                                val t = lineChars.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
+                                                val r = lineChars.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
+                                                val b = lineChars.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
                                                 drawRect(Color(0xFFBBDEFB), Offset(l, t), Size(r - l, b - t), blendMode = BlendMode.Multiply)
                                             }
                                             if (sel.existingHighlight == null) {
-                                                val firstWord = displayedWords.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left }))
-                                                val lastWord  = displayedWords.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right }))
-                                                firstWord?.let {
+                                                val firstChar = displayedChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left }))
+                                                val lastChar  = displayedChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right }))
+                                                firstChar?.let {
                                                     drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
                                                         center = Offset(it.bounds.left  / page.nativeWidth  * size.width,
                                                                         it.bounds.top / page.nativeHeight * size.height))
                                                 }
-                                                lastWord?.let {
+                                                lastChar?.let {
                                                     drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
                                                         center = Offset(it.bounds.right  / page.nativeWidth  * size.width,
                                                                         it.bounds.top / page.nativeHeight * size.height))
@@ -539,14 +540,14 @@ fun PdfViewerScreen(
                                         Box(modifier = Modifier.matchParentSize().pointerInput(sel) {
                                             val touchThreshPx = 32.dp.toPx()
                                             awaitEachGesture {
-                                                val currentWords = dragWords ?: sel.selectedWords
-                                                val firstWord = currentWords.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left })) ?: return@awaitEachGesture
-                                                val lastWord  = currentWords.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right })) ?: return@awaitEachGesture
+                                                val currentChars = dragChars ?: sel.selectedChars
+                                                val firstChar = currentChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left })) ?: return@awaitEachGesture
+                                                val lastChar  = currentChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right })) ?: return@awaitEachGesture
 
-                                                val startX = firstWord.bounds.left  / page.nativeWidth  * pageSize.width.toFloat()
-                                                val startY = firstWord.bounds.top   / page.nativeHeight * pageSize.height.toFloat()
-                                                val endX   = lastWord.bounds.right  / page.nativeWidth  * pageSize.width.toFloat()
-                                                val endY   = lastWord.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
+                                                val startX = firstChar.bounds.left  / page.nativeWidth  * pageSize.width.toFloat()
+                                                val startY = firstChar.bounds.top   / page.nativeHeight * pageSize.height.toFloat()
+                                                val endX   = lastChar.bounds.right  / page.nativeWidth  * pageSize.width.toFloat()
+                                                val endY   = lastChar.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
 
                                                 val down = awaitFirstDown(requireUnconsumed = false)
                                                 val downPos = down.position
@@ -565,43 +566,44 @@ fun PdfViewerScreen(
                                                     val pos = event.changes.firstOrNull()?.position ?: continue
                                                     val prX = pos.x / pageSize.width.toFloat()  * page.nativeWidth
                                                     val prY = pos.y / pageSize.height.toFloat() * page.nativeHeight
-                                                    val nearest = page.words.minByOrNull { w ->
-                                                        val cx = (w.bounds.left + w.bounds.right)  / 2f
-                                                        val cy = (w.bounds.top  + w.bounds.bottom) / 2f
+                                                    val allChars = page.words.flatMap { it.chars }
+                                                    val nearest = allChars.minByOrNull { c ->
+                                                        val cx = (c.bounds.left + c.bounds.right) / 2f
+                                                        val cy = (c.bounds.top  + c.bounds.bottom) / 2f
                                                         (cx - prX) * (cx - prX) + (cy - prY) * (cy - prY)
                                                     } ?: continue
-                                                    val lines = groupIntoLines(page.words)
+                                                    val lines = groupIntoLines(allChars)
                                                     val nearestCX = nearest.bounds.centerX()
-                                                    dragWords = if (hitStart) {
-                                                        val endWord = sel.selectedWords.last()
-                                                        val endLineIdx = lines.indexOfFirst { line -> endWord in line }
+                                                    dragChars = if (hitStart) {
+                                                        val endChar = sel.selectedChars.last()
+                                                        val endLineIdx = lines.indexOfFirst { line -> endChar in line }
                                                         val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
                                                         val clampedNearest = if (endLineIdx >= 0 && nearestLineIdx > endLineIdx)
                                                             lines[endLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
                                                         else nearest
-                                                        wordsFrom(clampedNearest, endWord, page.words)
+                                                        charsFrom(clampedNearest, endChar, allChars)
                                                     } else {
-                                                        val startWord = sel.selectedWords.first()
-                                                        val startLineIdx = lines.indexOfFirst { line -> startWord in line }
+                                                        val startChar = sel.selectedChars.first()
+                                                        val startLineIdx = lines.indexOfFirst { line -> startChar in line }
                                                         val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
                                                         val clampedNearest = if (startLineIdx >= 0 && nearestLineIdx < startLineIdx)
                                                             lines[startLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
                                                         else nearest
-                                                        wordsFrom(startWord, clampedNearest, page.words)
+                                                        charsFrom(startChar, clampedNearest, allChars)
                                                     }
                                                 } while (event.changes.any { it.pressed })
 
-                                                val committed = dragWords
+                                                val committed = dragChars
                                                 if (committed != null) {
-                                                    textSelection = sel.copy(selectedWords = committed)
-                                                    dragWords = null
+                                                    textSelection = sel.copy(selectedChars = committed)
+                                                    dragChars = null
                                                 }
                                             }
                                         })
 
-                                        if (displayedWords.isNotEmpty()) {
-                                            val selTopPR    = displayedWords.minOf { it.bounds.top - it.bounds.height() }
-                                            val selCenterX  = (displayedWords.minOf { it.bounds.left } + displayedWords.maxOf { it.bounds.right }) / 2f
+                                        if (displayedChars.isNotEmpty()) {
+                                            val selTopPR    = displayedChars.minOf { it.bounds.top - it.bounds.height() }
+                                            val selCenterX  = (displayedChars.minOf { it.bounds.left } + displayedChars.maxOf { it.bounds.right }) / 2f
                                             val popupLocalX = (selCenterX / page.nativeWidth  * pageSize.width.toFloat()).roundToInt()
                                             val popupLocalY = (selTopPR   / page.nativeHeight * pageSize.height.toFloat()).roundToInt()
                                             with(density) {
@@ -619,7 +621,7 @@ fun PdfViewerScreen(
                                                         Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                                             if (sel.existingHighlight == null) {
                                                                 TextButton(onClick = {
-                                                                    viewModel.addHighlight(sel.pageIndex, sel.selectedWords)
+                                                                    viewModel.addHighlight(sel.pageIndex, sel.selectedChars)
                                                                     textSelection = null
                                                                 }) { Text("Highlight") }
                                                             } else {
