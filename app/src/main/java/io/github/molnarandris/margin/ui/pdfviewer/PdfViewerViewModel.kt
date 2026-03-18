@@ -69,7 +69,7 @@ data class PdfPage(
 
 sealed class PdfViewerUiState {
     object Loading : PdfViewerUiState()
-    data class Ready(val pages: List<PdfPage>) : PdfViewerUiState()
+    data class Ready(val pages: List<PdfPage>, val title: String = "", val author: String = "") : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
 }
 
@@ -152,7 +152,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
             }
-            _uiState.value = PdfViewerUiState.Ready(newPages)
+            _uiState.value = state.copy(pages = newPages)
         }
     }
 
@@ -253,7 +253,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 pdPage.annotations.add(ann)
 
-                app.contentResolver.openOutputStream(uri)!!.use { pdDoc.save(it) }
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
                 pdDoc.close()
 
                 reloadPage(uri, app, pageIndex)
@@ -275,7 +275,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 if (highlight.annotationIndex in annotations.indices) {
                     annotations.removeAt(highlight.annotationIndex)
                 }
-                app.contentResolver.openOutputStream(uri)!!.use { pdDoc.save(it) }
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
                 pdDoc.close()
 
                 reloadPage(uri, app, highlight.pageIndex)
@@ -328,7 +328,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         withContext(Dispatchers.Main) {
-            _uiState.value = PdfViewerUiState.Ready(newPages)
+            _uiState.value = state.copy(pages = newPages)
         }
     }
 
@@ -419,13 +419,42 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                             PdfPage(bitmap, page.width, page.height, links, words, highlights)
                         }
                     }
+                    val title  = pdDoc.documentInformation?.title?.takeIf  { it.isNotBlank() } ?: ""
+                    val author = pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() } ?: ""
                     pdDoc.close()
-                    PdfViewerUiState.Ready(pages)
+                    PdfViewerUiState.Ready(pages, title, author)
                 }
             } catch (e: Exception) {
                 PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
             }
         }
+
+    fun setMetadata(newTitle: String, newAuthor: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val info = pdDoc.documentInformation
+                info.title  = newTitle
+                info.author = newAuthor
+                pdDoc.documentInformation = info  // re-attach in case no /Info dict existed
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.close()
+
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
+            }
+            val state = _uiState.value as? PdfViewerUiState.Ready ?: return@launch
+            withContext(Dispatchers.Main) {
+                _uiState.value = state.copy(title = newTitle, author = newAuthor)
+            }
+        }
+    }
 
     override fun onCleared() {
         super.onCleared()

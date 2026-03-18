@@ -13,6 +13,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,6 +73,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -103,6 +107,12 @@ fun PdfViewerScreen(
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
+    val pdfTitle  = (uiState as? PdfViewerUiState.Ready)?.title  ?: ""
+    val pdfAuthor = (uiState as? PdfViewerUiState.Ready)?.author ?: ""
+    var isEditDialogVisible by remember { mutableStateOf(false) }
+    var titleEditText  by remember { mutableStateOf("") }
+    var authorEditText by remember { mutableStateOf("") }
+
     LaunchedEffect(searchQuery) {
         viewModel.search(searchQuery)
     }
@@ -112,6 +122,40 @@ fun PdfViewerScreen(
             searchFocusRequester.requestFocus()
             keyboardController?.show()
         }
+    }
+
+    if (isEditDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { isEditDialogVisible = false },
+            title = { Text("Edit Document Info") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = titleEditText,
+                        onValueChange = { titleEditText = it },
+                        label = { Text("Title") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = authorEditText,
+                        onValueChange = { authorEditText = it },
+                        label = { Text("Author") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setMetadata(titleEditText, authorEditText)
+                    isEditDialogVisible = false
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { isEditDialogVisible = false }) { Text("Cancel") }
+            }
+        )
     }
 
     Scaffold(
@@ -127,7 +171,33 @@ fun PdfViewerScreen(
                             modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester)
                         )
                     } else {
-                        Text("PDF Viewer")
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(0.dp),
+                            modifier = Modifier.pointerInput(Unit) {
+                                detectTapGestures(onLongPress = {
+                                    titleEditText  = pdfTitle
+                                    authorEditText = pdfAuthor
+                                    isEditDialogVisible = true
+                                })
+                            }
+                        ) {
+                            Text(
+                                text = if (pdfTitle.isNotEmpty()) pdfTitle else "No Title",
+                                fontSize = 16.sp,
+                                lineHeight = 18.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (pdfAuthor.isNotEmpty()) {
+                                Text(
+                                    text = pdfAuthor,
+                                    fontSize = 12.sp,
+                                    lineHeight = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
                 },
                 navigationIcon = {
