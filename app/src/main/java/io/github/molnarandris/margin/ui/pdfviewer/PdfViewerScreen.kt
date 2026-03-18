@@ -107,8 +107,8 @@ fun PdfViewerScreen(
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    val pdfTitle  = (uiState as? PdfViewerUiState.Ready)?.title  ?: ""
-    val pdfAuthor = (uiState as? PdfViewerUiState.Ready)?.author ?: ""
+    val pdfTitle  by viewModel.displayTitle.collectAsState()
+    val pdfAuthor by viewModel.displayAuthor.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
     var titleEditText  by remember { mutableStateOf("") }
     var authorEditText by remember { mutableStateOf("") }
@@ -316,6 +316,12 @@ fun PdfViewerScreen(
                             val visibleIndices = lazyListState.layoutInfo.visibleItemsInfo.map { it.index }
                             viewModel.updateRenderScale(currentScale, visibleIndices)
                         }
+                }
+
+                // Track visible page for phase-2 highlight prioritization
+                LaunchedEffect(Unit) {
+                    snapshotFlow { lazyListState.firstVisibleItemIndex }
+                        .collect { viewModel.onVisiblePageChanged(it) }
                 }
 
                 // Dismiss selection on scroll

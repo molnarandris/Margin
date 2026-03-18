@@ -7,6 +7,7 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -17,6 +18,7 @@ import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,27 +75,50 @@ sealed class PdfViewerUiState {
     data class Error(val message: String) : PdfViewerUiState()
 }
 
-private class WordExtractor : PDFTextStripper() {
-    val words = mutableListOf<TextWord>()
+private class WordExtractor(private val pageCount: Int) : PDFTextStripper() {
+    val wordsByPage: Array<MutableList<TextWord>> = Array(pageCount) { mutableListOf() }
     private val currentWordChars = mutableListOf<TextPosition>()
 
     override fun writeString(text: String, positions: List<TextPosition>) {
         for (pos in positions) {
-            if (pos.unicode.isBlank()) {
-                flushWord()
-            } else {
-                currentWordChars.add(pos)
-            }
+            if (pos.unicode.isBlank()) flushWord() else currentWordChars.add(pos)
         }
         flushWord()
     }
 
     private fun flushWord() {
         if (currentWordChars.isEmpty()) return
-        val text = currentWordChars.joinToString("") { it.unicode }
+        val pageIdx = currentPageNo - 1  // PDFTextStripper is 1-based
+        if (pageIdx !in wordsByPage.indices) { currentWordChars.clear(); return }
+        val text   = currentWordChars.joinToString("") { it.unicode }
         val left   = currentWordChars.minOf { it.x }
         val right  = currentWordChars.maxOf { it.x + it.width }
-        // TextPosition.getY() is already in screen space (Y down from top of page).
+        val top    = currentWordChars.minOf { it.y }
+        val bottom = currentWordChars.maxOf { it.y + it.height }
+        val chars  = currentWordChars.map { pos ->
+            TextChar(pos.unicode, RectF(pos.x, pos.y, pos.x + pos.width, pos.y + pos.height))
+        }
+        wordsByPage[pageIdx].add(TextWord(text, RectF(left, top, right, bottom), chars))
+        currentWordChars.clear()
+    }
+}
+
+private class SinglePageWordExtractor : PDFTextStripper() {
+    val words = mutableListOf<TextWord>()
+    private val currentWordChars = mutableListOf<TextPosition>()
+
+    override fun writeString(text: String, positions: List<TextPosition>) {
+        for (pos in positions) {
+            if (pos.unicode.isBlank()) flushWord() else currentWordChars.add(pos)
+        }
+        flushWord()
+    }
+
+    private fun flushWord() {
+        if (currentWordChars.isEmpty()) return
+        val text   = currentWordChars.joinToString("") { it.unicode }
+        val left   = currentWordChars.minOf { it.x }
+        val right  = currentWordChars.maxOf { it.x + it.width }
         val top    = currentWordChars.minOf { it.y }
         val bottom = currentWordChars.maxOf { it.y + it.height }
         val chars  = currentWordChars.map { pos ->
@@ -109,6 +134,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Loading)
     val uiState: StateFlow<PdfViewerUiState> = _uiState.asStateFlow()
 
+    private val _displayTitle = MutableStateFlow("")
+    val displayTitle: StateFlow<String> = _displayTitle.asStateFlow()
+
+    private val _displayAuthor = MutableStateFlow("")
+    val displayAuthor: StateFlow<String> = _displayAuthor.asStateFlow()
+
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
 
@@ -118,12 +149,25 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var rerenderJob: Job? = null
     private var currentRenderScale = 2f
     private var docUri: Uri? = null
+    var firstVisiblePageIndex: Int = 0
+
+    fun onVisiblePageChanged(index: Int) {
+        firstVisiblePageIndex = index
+    }
 
     fun loadPdf(dirUri: Uri, docId: String) {
         rerenderJob?.cancel()
         viewModelScope.launch {
             _uiState.value = PdfViewerUiState.Loading
-            _uiState.value = renderPages(dirUri, docId)
+            val app = getApplication<Application>()
+            val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
+            val fileName = withContext(Dispatchers.IO) {
+                app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0).removeSuffix(".pdf") else ""
+                    } ?: ""
+            }
+            renderPages(dirUri, docId, fileName)
         }
     }
 
@@ -332,9 +376,19 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun extractAllWords(pdDoc: PDDocument, pageCount: Int): List<List<TextWord>> {
+        return try {
+            val extractor = WordExtractor(pageCount)
+            extractor.getText(pdDoc)
+            extractor.wordsByPage.map { it.toList() }
+        } catch (e: Exception) {
+            List(pageCount) { emptyList() }
+        }
+    }
+
     private fun extractWords(pdDoc: PDDocument, pageIndex: Int): List<TextWord> {
         return try {
-            val extractor = WordExtractor()
+            val extractor = SinglePageWordExtractor()
             extractor.startPage = pageIndex + 1
             extractor.endPage   = pageIndex + 1
             extractor.getText(pdDoc)
@@ -372,7 +426,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private suspend fun renderPages(dirUri: Uri, docId: String): PdfViewerUiState =
+    private suspend fun renderPages(dirUri: Uri, docId: String, fileName: String): Unit =
         withContext(Dispatchers.IO) {
             try {
                 val app = getApplication<Application>()
@@ -382,7 +436,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 this@PdfViewerViewModel.docUri = uri
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r")
-                    ?: return@withContext PdfViewerUiState.Error("Could not open file")
+                    ?: run {
+                        withContext(Dispatchers.Main) {
+                            _uiState.value = PdfViewerUiState.Error("Could not open file")
+                        }
+                        return@withContext
+                    }
 
                 pfd?.close()
                 renderer?.close()
@@ -391,41 +450,70 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer = newRenderer
                 currentRenderScale = 2f
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                // Start PDFBox load while PdfRenderer was being set up
+                val pdDocDeferred = async { PDDocument.load(app.contentResolver.openInputStream(uri)!!) }
 
-                renderMutex.withLock {
-                    val pages = (0 until newRenderer.pageCount).map { index ->
+                // Extract metadata first so TopAppBar shows title/author before bitmaps arrive
+                val pdDoc = pdDocDeferred.await()
+                val title  = pdDoc.documentInformation?.title?.takeIf  { it.isNotBlank() } ?: ""
+                val author = pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() } ?: ""
+                withContext(Dispatchers.Main) {
+                    _displayTitle.value = title.ifBlank { fileName }
+                    _displayAuthor.value = author
+                }
+
+                // --- PHASE 1: bitmaps + links only ---
+                val pages = renderMutex.withLock {
+                    (0 until newRenderer.pageCount).map { index ->
                         newRenderer.openPage(index).use { page ->
-                            val scale = 2f
                             val bitmap = Bitmap.createBitmap(
-                                (page.width * scale).toInt(),
-                                (page.height * scale).toInt(),
+                                (page.width * 2f).toInt(),
+                                (page.height * 2f).toInt(),
                                 Bitmap.Config.ARGB_8888
                             )
                             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-
                             val links = mutableListOf<PdfLink>()
-                            page.getLinkContents().forEach { link ->
-                                links.add(PdfLink(link.bounds, LinkTarget.Url(link.uri)))
+                            page.getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
+                            page.getGotoLinks().forEach { dest ->
+                                links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
+                                    dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
                             }
-                            page.getGotoLinks().forEach { link ->
-                                val dest = link.destination
-                                links.add(PdfLink(link.bounds, LinkTarget.Goto(dest.pageNumber, dest.xCoordinate, dest.yCoordinate, dest.zoom)))
-                            }
-
-                            val words = extractWords(pdDoc, index)
-                            val highlights = extractHighlights(pdDoc, index, page.height.toFloat())
-
-                            PdfPage(bitmap, page.width, page.height, links, words, highlights)
+                            PdfPage(bitmap, page.width, page.height, links, emptyList(), emptyList())
                         }
                     }
-                    val title  = pdDoc.documentInformation?.title?.takeIf  { it.isNotBlank() } ?: ""
-                    val author = pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() } ?: ""
-                    pdDoc.close()
-                    PdfViewerUiState.Ready(pages, title, author)
+                }
+
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(pages, title, author)
+                }
+
+                val pageCount = pages.size
+
+                // Extract all highlights first — fast, not coupled to word extraction
+                val allHighlights = (0 until pageCount).map { i ->
+                    extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
+                }
+                val pagesWithHighlights = pages.mapIndexed { i, page ->
+                    page.copy(highlights = allHighlights[i])
+                }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, author)
+                }
+
+                // Extract words (slow) and emit final state
+                val allWords = extractAllWords(pdDoc, pageCount)
+                pdDoc.close()
+
+                val enrichedPages = pagesWithHighlights.mapIndexed { i, page ->
+                    page.copy(words = allWords[i])
+                }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(enrichedPages, title, author)
                 }
             } catch (e: Exception) {
-                PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
+                }
             }
         }
 
@@ -451,6 +539,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }
             val state = _uiState.value as? PdfViewerUiState.Ready ?: return@launch
             withContext(Dispatchers.Main) {
+                _displayTitle.value = newTitle
+                _displayAuthor.value = newAuthor
                 _uiState.value = state.copy(title = newTitle, author = newAuthor)
             }
         }
