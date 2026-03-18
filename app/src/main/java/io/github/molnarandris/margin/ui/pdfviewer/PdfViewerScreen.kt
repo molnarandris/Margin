@@ -422,13 +422,23 @@ fun PdfViewerScreen(
                                                         val prY = longPressOffset.y / pageSize.height * page.nativeHeight
 
                                                         // 1. Check existing highlights first
+                                                        // PdfHighlight.bounds: top=visualTop, bottom=baseline (standard Y-down).
+                                                        // Extend bottom by 30% of height to cover descenders.
                                                         val hitHighlight = page.highlights.firstOrNull { h ->
-                                                            h.bounds.any { rect -> rect.contains(prX, prY) }
+                                                            h.bounds.any { rect ->
+                                                                rect.left <= prX && prX <= rect.right &&
+                                                                rect.top <= prY && prY <= rect.bottom + rect.height() * 0.3f
+                                                            }
                                                         }
                                                         if (hitHighlight != null) {
+                                                            // TextWord.bounds uses non-standard coords: top=baseline, bottom=baseline+capHeight.
+                                                            // Visual region of word: [top-height(), top]. Match against highlight's [r.top, r.bottom].
                                                             val hlWords = page.words.filter { w ->
                                                                 hitHighlight.bounds.any { r ->
-                                                                    android.graphics.RectF.intersects(r, w.bounds)
+                                                                    val wVisualTop = w.bounds.top - w.bounds.height()
+                                                                    val wVisualBot = w.bounds.top
+                                                                    w.bounds.right > r.left && w.bounds.left < r.right &&
+                                                                    wVisualBot > r.top && wVisualTop < r.bottom
                                                                 }
                                                             }
                                                             textSelection = TextSelection(index, hlWords, hitHighlight)
@@ -437,7 +447,9 @@ fun PdfViewerScreen(
 
                                                         // 2. Check text words
                                                         val hitWord = page.words.firstOrNull { w ->
-                                                            w.bounds.contains(prX, prY)
+                                                            val visualTop = w.bounds.top - w.bounds.height()
+                                                            prX >= w.bounds.left && prX <= w.bounds.right &&
+                                                            prY >= visualTop && prY <= w.bounds.bottom
                                                         }
                                                         if (hitWord != null) {
                                                             textSelection = TextSelection(index, listOf(hitWord))
@@ -514,12 +526,12 @@ fun PdfViewerScreen(
                                                 firstWord?.let {
                                                     drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
                                                         center = Offset(it.bounds.left  / page.nativeWidth  * size.width,
-                                                                        it.bounds.bottom / page.nativeHeight * size.height))
+                                                                        it.bounds.top / page.nativeHeight * size.height))
                                                 }
                                                 lastWord?.let {
                                                     drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
                                                         center = Offset(it.bounds.right  / page.nativeWidth  * size.width,
-                                                                        it.bounds.bottom / page.nativeHeight * size.height))
+                                                                        it.bounds.top / page.nativeHeight * size.height))
                                                 }
                                             }
                                         }
@@ -531,10 +543,10 @@ fun PdfViewerScreen(
                                                 val firstWord = currentWords.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left })) ?: return@awaitEachGesture
                                                 val lastWord  = currentWords.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right })) ?: return@awaitEachGesture
 
-                                                val startX = firstWord.bounds.left   / page.nativeWidth  * pageSize.width.toFloat()
-                                                val startY = firstWord.bounds.bottom / page.nativeHeight * pageSize.height.toFloat()
-                                                val endX   = lastWord.bounds.right   / page.nativeWidth  * pageSize.width.toFloat()
-                                                val endY   = lastWord.bounds.bottom  / page.nativeHeight * pageSize.height.toFloat()
+                                                val startX = firstWord.bounds.left  / page.nativeWidth  * pageSize.width.toFloat()
+                                                val startY = firstWord.bounds.top   / page.nativeHeight * pageSize.height.toFloat()
+                                                val endX   = lastWord.bounds.right  / page.nativeWidth  * pageSize.width.toFloat()
+                                                val endY   = lastWord.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
 
                                                 val down = awaitFirstDown(requireUnconsumed = false)
                                                 val downPos = down.position
