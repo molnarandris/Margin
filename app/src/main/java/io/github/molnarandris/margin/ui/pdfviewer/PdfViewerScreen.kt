@@ -548,6 +548,7 @@ fun PdfViewerScreen(
                                             .onSizeChanged { pageSize = it }
                                             .pointerInput(page.links, page.words, page.highlights) {
                                                 detectTapGestures(
+                                                    onDoubleTap = { barsVisible = !barsVisible },
                                                     onTap = { tapOffset ->
                                                         // Dismiss selection on tap
                                                         if (currentSelectionRef.value != null) {
@@ -592,7 +593,7 @@ fun PdfViewerScreen(
                                                                     destinationHighlight = null
                                                                 }
                                                             }
-                                                            null -> barsVisible = !barsVisible
+                                                            null -> {}
                                                         }
                                                     },
                                                     onLongPress = { longPressOffset ->
