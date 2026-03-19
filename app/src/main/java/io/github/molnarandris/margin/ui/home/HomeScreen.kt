@@ -3,7 +3,8 @@ package io.github.molnarandris.margin.ui.home
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,22 +18,32 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.Alignment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -46,6 +57,7 @@ import io.github.molnarandris.margin.data.PdfFile
 @Composable
 fun HomeScreen(
     onOpenPdf: (dirUri: Uri, docUri: Uri) -> Unit,
+    onOpenSettings: () -> Unit,
     viewModel: HomeViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -59,12 +71,6 @@ fun HomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val directoryPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) viewModel.onDirectorySelected(uri)
-    }
-
     val pdfPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -76,10 +82,8 @@ fun HomeScreen(
             TopAppBar(
                 title = { Text("Margin") },
                 actions = {
-                    if (uiState is HomeUiState.Ready) {
-                        IconButton(onClick = { directoryPicker.launch(null) }) {
-                            Icon(Icons.Default.FolderOpen, contentDescription = "Change directory")
-                        }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 }
             )
@@ -110,7 +114,7 @@ fun HomeScreen(
                 ) {
                     Text("Choose a folder where your documents will be stored.")
                     Spacer(modifier = Modifier.height(24.dp))
-                    Button(onClick = { directoryPicker.launch(null) }) {
+                    Button(onClick = onOpenSettings) {
                         Text("Choose Directory")
                     }
                 }
@@ -128,6 +132,10 @@ fun HomeScreen(
                     PdfList(
                         pdfs = state.pdfs,
                         onPdfClick = { onOpenPdf(state.directoryUri, it.uri) },
+                        onPdfDelete = { viewModel.deletePdf(it) },
+                        onPdfMetadataUpdate = { pdf, title, author ->
+                            viewModel.updateMetadata(pdf, title, author)
+                        },
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -136,23 +144,103 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PdfList(
     pdfs: List<PdfFile>,
     onPdfClick: (PdfFile) -> Unit,
+    onPdfDelete: (PdfFile) -> Unit,
+    onPdfMetadataUpdate: (PdfFile, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var menuTarget by remember { mutableStateOf<PdfFile?>(null) }
+    var pendingDelete by remember { mutableStateOf<PdfFile?>(null) }
+    var editTarget by remember { mutableStateOf<PdfFile?>(null) }
+
+    pendingDelete?.let { pdf ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete file?") },
+            text = { Text("\"${pdf.name}\" will be permanently deleted.") },
+            confirmButton = {
+                TextButton(onClick = { onPdfDelete(pdf); pendingDelete = null }) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    editTarget?.let { pdf ->
+        var title by rememberSaveable(pdf.uri) { mutableStateOf(pdf.title) }
+        var author by rememberSaveable(pdf.uri) { mutableStateOf(pdf.author) }
+        AlertDialog(
+            onDismissRequest = { editTarget = null },
+            title = { Text("Edit metadata") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("Title") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = author,
+                        onValueChange = { author = it },
+                        label = { Text("Author") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { onPdfMetadataUpdate(pdf, title, author); editTarget = null }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editTarget = null }) { Text("Cancel") }
+            }
+        )
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
         items(pdfs, key = { it.uri.toString() }) { pdf ->
-            ListItem(
-                headlineContent = { Text(pdf.name) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onPdfClick(pdf) }
-            )
+            val meta = listOfNotNull(
+                pdf.title.takeIf { it.isNotBlank() },
+                pdf.author.takeIf { it.isNotBlank() }
+            ).joinToString(" — ")
+            Box {
+                ListItem(
+                    headlineContent = { Text(pdf.name) },
+                    supportingContent = if (meta.isNotBlank()) ({ Text(meta) }) else null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = { onPdfClick(pdf) },
+                            onLongClick = { menuTarget = pdf }
+                        )
+                )
+                DropdownMenu(
+                    expanded = menuTarget?.uri == pdf.uri,
+                    onDismissRequest = { menuTarget = null },
+                    properties = PopupProperties(focusable = true)
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Edit metadata") },
+                        onClick = { editTarget = pdf; menuTarget = null }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        onClick = { pendingDelete = pdf; menuTarget = null }
+                    )
+                }
+            }
             HorizontalDivider()
         }
     }

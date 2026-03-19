@@ -62,6 +62,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deletePdf(pdf: PdfFile) {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        viewModelScope.launch {
+            val deleted = pdfRepo.deletePdf(pdf.uri)
+            if (deleted) {
+                _uiState.value = state.copy(pdfs = state.pdfs - pdf)
+            }
+        }
+    }
+
+    fun updateMetadata(pdf: PdfFile, title: String, author: String) {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        viewModelScope.launch {
+            val updated = pdfRepo.updateMetadata(pdf.uri, title, author)
+            if (updated) {
+                val newPdf = pdf.copy(title = title, author = author)
+                _uiState.value = state.copy(pdfs = state.pdfs.map { if (it.uri == pdf.uri) newPdf else it })
+            }
+        }
+    }
+
     fun refreshPdfs() {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {

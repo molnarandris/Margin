@@ -12,6 +12,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import io.github.molnarandris.margin.ui.home.HomeScreen
 import io.github.molnarandris.margin.ui.pdfviewer.PdfViewerScreen
+import io.github.molnarandris.margin.ui.settings.SettingsScreen
 import android.net.Uri
 import android.provider.DocumentsContract
 import io.github.molnarandris.margin.ui.theme.MarginTheme
@@ -39,8 +40,12 @@ fun MarginApp() {
                     val encodedDir = Uri.encode(dirUri.toString())
                     val encodedDocId = Uri.encode(DocumentsContract.getDocumentId(docUri))
                     navController.navigate("pdf_viewer?dirUri=$encodedDir&docId=$encodedDocId")
-                }
+                },
+                onOpenSettings = { navController.navigate("settings") }
             )
+        }
+        composable("settings") {
+            SettingsScreen(onBack = { navController.popBackStack() })
         }
         composable(
             route = "pdf_viewer?dirUri={dirUri}&docId={docId}",
