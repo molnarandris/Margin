@@ -445,8 +445,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
         val state = _uiState.value as? PdfViewerUiState.Ready ?: return
         val newPages = state.pages.toMutableList()
-        var reloadedStrokes: List<InkStroke> = emptyList()
-
         // Re-render bitmap
         newRenderer.openPage(pageIndex).use { page ->
             val scale = currentRenderScale
@@ -457,11 +455,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             )
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-            // Re-extract words, highlights, and ink strokes
+            // Re-extract words and highlights only — ink stroke memory is authoritative
             val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
             val words = extractWords(pdDoc, pageIndex)
             val highlights = extractHighlights(pdDoc, pageIndex, page.height.toFloat())
-            reloadedStrokes = extractInkStrokes(pdDoc, pageIndex, page.width.toFloat(), page.height.toFloat())
             pdDoc.close()
 
             newPages[pageIndex] = newPages[pageIndex].copy(
@@ -473,10 +470,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
         withContext(Dispatchers.Main) {
             _uiState.value = state.copy(pages = newPages)
-            if (reloadedStrokes.isEmpty())
-                _completedInkStrokes.update { it - pageIndex }
-            else
-                _completedInkStrokes.update { it + (pageIndex to reloadedStrokes) }
         }
     }
 

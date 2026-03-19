@@ -490,7 +490,10 @@ fun PdfViewerScreen(
                                             val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
                                             val pageStrokes = completedInkStrokes[index]
                                             if (isScribble(points) && !pageStrokes.isNullOrEmpty()) {
-                                                val intersecting = pageStrokes.filter { strokeIntersectsScribble(it.points, normalizedPoints) }
+                                                val intersecting = pageStrokes.filter {
+                                                    strokeIntersectsScribble(it.points, normalizedPoints) ||
+                                                    strokeNearScribble(it.points, points, pageSize, 10f)
+                                                }
                                                 if (intersecting.isNotEmpty()) {
                                                     viewModel.eraseInkStrokes(index, intersecting.map { it.id })
                                                     currentInkStroke = null
@@ -858,9 +861,10 @@ private fun isScribble(points: List<Offset>): Boolean {
     for (i in 1 until points.size - 1) {
         val dx1 = points[i].x - points[i-1].x; val dy1 = points[i].y - points[i-1].y
         val dx2 = points[i+1].x - points[i].x; val dy2 = points[i+1].y - points[i].y
-        if (dx1 * dx2 + dy1 * dy2 < 0f) reversals++
+        val dot = dx1 * dx2 + dy1 * dy2
+        if (dot < 0f && dot * dot > 0.0302f * (dx1*dx1 + dy1*dy1) * (dx2*dx2 + dy2*dy2)) reversals++
     }
-    return reversals >= 2
+    return reversals >= 5
 }
 
 private fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): Boolean {
@@ -876,5 +880,28 @@ private fun strokeIntersectsScribble(strokePts: List<Offset>, scribbleNorm: List
     for (i in 0 until strokePts.size - 1)
         for (j in 0 until scribbleNorm.size - 1)
             if (segmentsIntersect(strokePts[i], strokePts[i+1], scribbleNorm[j], scribbleNorm[j+1])) return true
+    return false
+}
+
+private fun pointToSegmentDist(p: Offset, a: Offset, b: Offset): Float {
+    val dx = b.x - a.x; val dy = b.y - a.y
+    if (dx == 0f && dy == 0f) {
+        val ex = p.x - a.x; val ey = p.y - a.y
+        return sqrt(ex * ex + ey * ey)
+    }
+    val t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)
+    val cx = a.x + t.coerceIn(0f, 1f) * dx
+    val cy = a.y + t.coerceIn(0f, 1f) * dy
+    val ex = p.x - cx; val ey = p.y - cy
+    return sqrt(ex * ex + ey * ey)
+}
+
+private fun strokeNearScribble(
+    strokeNorm: List<Offset>, scribblePx: List<Offset>, pageSize: IntSize, thresholdPx: Float
+): Boolean {
+    val strokePx = strokeNorm.map { Offset(it.x * pageSize.width, it.y * pageSize.height) }
+    for (pt in strokePx)
+        for (j in 0 until scribblePx.size - 1)
+            if (pointToSegmentDist(pt, scribblePx[j], scribblePx[j + 1]) <= thresholdPx) return true
     return false
 }
