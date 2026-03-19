@@ -62,7 +62,10 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -102,6 +105,7 @@ fun PdfViewerScreen(
 
     val uiState by viewModel.uiState.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
+    val completedInkStrokes by viewModel.completedInkStrokes.collectAsState()
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -422,8 +426,8 @@ fun PdfViewerScreen(
                                         singleTouchAxis = 0
                                         event.changes.forEach { it.consume() }
                                     } else if (!everMultiTouch && !isDraggingHandle) {
-                                        // Single-finger: detect axis then handle horizontal scroll
-                                        val change = event.changes.firstOrNull()
+                                        // Single-finger: detect axis then handle horizontal scroll (not for stylus)
+                                        val change = event.changes.firstOrNull { it.type != PointerType.Stylus }
                                         if (change != null) {
                                             val dx = change.position.x - change.previousPosition.x
                                             val dy = change.position.y - change.previousPosition.y
@@ -460,12 +464,36 @@ fun PdfViewerScreen(
                     ) {
                         itemsIndexed(state.pages) { index, page ->
                             var pageSize by remember { mutableStateOf(IntSize.Zero) }
+                            var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
                             Card(
                                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                                 shape = RectangleShape,
                                 colors = CardDefaults.cardColors(containerColor = Color.White)
                             ) {
-                                Box {
+                                Box(modifier = Modifier.pointerInput(page.nativeWidth, page.nativeHeight) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        if (down.type != PointerType.Stylus) return@awaitEachGesture
+                                        down.consume()
+                                        val points = mutableListOf(down.position)
+                                        currentInkStroke = listOf(down.position)
+                                        while (true) {
+                                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                                            val change = event.changes.find { it.id == down.id } ?: break
+                                            if (!change.pressed) break
+                                            change.consume()
+                                            points.add(change.position)
+                                            currentInkStroke = points.toList()
+                                        }
+                                        if (pageSize != IntSize.Zero) {
+                                            // A single tap produces one point; duplicate it so addInkAnnotation
+                                            // treats it as a zero-length stroke (rendered as a dot).
+                                            val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
+                                            viewModel.addInkAnnotation(index, stroke, pageSize.width, pageSize.height)
+                                        }
+                                        currentInkStroke = null
+                                    }
+                                }) {
                                     Image(
                                         bitmap = page.bitmap.asImageBitmap(),
                                         contentDescription = "Page ${index + 1}",
@@ -609,6 +637,45 @@ fun PdfViewerScreen(
                                                     val b  = r.top                 / page.nativeHeight * size.height
                                                     drawRect(color, Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
                                                 }
+                                            }
+                                        }
+                                    }
+
+                                    // Completed ink strokes (normalized coords → screen coords)
+                                    val pageStrokes = completedInkStrokes[index]
+                                    if (!pageStrokes.isNullOrEmpty()) {
+                                        Canvas(modifier = Modifier.matchParentSize()) {
+                                            val strokePx = size.width / page.nativeWidth
+                                            for (stroke in pageStrokes) {
+                                                if (stroke.size < 2) continue
+                                                val x0 = stroke.first().x * size.width
+                                                val y0 = stroke.first().y * size.height
+                                                if (stroke.first() == stroke.last()) {
+                                                    drawCircle(Color.Black, radius = strokePx / 2f, center = Offset(x0, y0))
+                                                } else {
+                                                    val path = Path().apply {
+                                                        moveTo(x0, y0)
+                                                        stroke.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
+                                                    }
+                                                    drawPath(path, color = Color.Black, style = Stroke(width = strokePx))
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // In-progress ink stroke overlay
+                                    val inkStroke = currentInkStroke
+                                    if (inkStroke != null && inkStroke.size >= 2) {
+                                        Canvas(modifier = Modifier.matchParentSize()) {
+                                            val strokePx = size.width / page.nativeWidth
+                                            if (inkStroke.first() == inkStroke.last()) {
+                                                drawCircle(Color.Black, radius = strokePx / 2f, center = inkStroke.first())
+                                            } else {
+                                                val path = Path().apply {
+                                                    moveTo(inkStroke.first().x, inkStroke.first().y)
+                                                    inkStroke.drop(1).forEach { lineTo(it.x, it.y) }
+                                                }
+                                                drawPath(path, color = Color.Black, style = Stroke(width = strokePx))
                                             }
                                         }
                                     }

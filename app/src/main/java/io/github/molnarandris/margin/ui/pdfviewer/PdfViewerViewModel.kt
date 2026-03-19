@@ -12,18 +12,21 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
+import androidx.compose.ui.geometry.Offset
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -142,6 +145,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
+
+    private val _completedInkStrokes = MutableStateFlow<Map<Int, List<List<Offset>>>>(emptyMap())
+    val completedInkStrokes: StateFlow<Map<Int, List<List<Offset>>>> = _completedInkStrokes.asStateFlow()
 
     private var pfd: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
@@ -305,6 +311,46 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun addInkAnnotation(pageIndex: Int, points: List<Offset>, displayWidth: Int, displayHeight: Int) {
+        val normalized = points.map { Offset(it.x / displayWidth, it.y / displayHeight) }
+        _completedInkStrokes.update { map ->
+            map + (pageIndex to (map[pageIndex].orEmpty() + listOf(normalized)))
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val pdPage = pdDoc.getPage(pageIndex)
+                val pageW = pdPage.mediaBox.width
+                val pageH = pdPage.mediaBox.height
+
+                val contentStream = PDPageContentStream(
+                    pdDoc, pdPage, PDPageContentStream.AppendMode.APPEND, true, true
+                )
+                contentStream.setStrokingColor(0f, 0f, 0f)
+                contentStream.setLineWidth(1f)
+                contentStream.setLineCapStyle(1) // round cap — zero-length stroke renders as a dot
+                contentStream.moveTo(normalized[0].x * pageW, pageH - normalized[0].y * pageH)
+                for (i in 1 until normalized.size) {
+                    contentStream.lineTo(normalized[i].x * pageW, pageH - normalized[i].y * pageH)
+                }
+                contentStream.stroke()
+                contentStream.close()
+
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.close()
+
+                // Re-open renderer without re-rendering the bitmap
+                pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                renderer = PdfRenderer(pfd!!)
+            }
+        }
+    }
+
     fun deleteHighlight(highlight: PdfHighlight) {
         viewModelScope.launch(Dispatchers.IO) {
             val uri = docUri ?: return@launch
@@ -373,6 +419,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
         withContext(Dispatchers.Main) {
             _uiState.value = state.copy(pages = newPages)
+            _completedInkStrokes.update { it - pageIndex }
         }
     }
 
