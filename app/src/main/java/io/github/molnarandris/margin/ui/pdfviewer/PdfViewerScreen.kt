@@ -1,5 +1,6 @@
 package io.github.molnarandris.margin.ui.pdfviewer
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
@@ -44,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,6 +56,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -118,6 +124,26 @@ fun PdfViewerScreen(
     var titleEditText  by remember { mutableStateOf("") }
     var authorEditText by remember { mutableStateOf("") }
 
+    var barsVisible by remember { mutableStateOf(true) }
+    val view = LocalView.current
+    LaunchedEffect(barsVisible) {
+        val window = (view.context as Activity).window
+        val controller = WindowInsetsControllerCompat(window, view)
+        if (barsVisible) {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            val window = (view.context as Activity).window
+            WindowInsetsControllerCompat(window, view).show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     LaunchedEffect(searchQuery) {
         viewModel.search(searchQuery)
     }
@@ -164,8 +190,7 @@ fun PdfViewerScreen(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
+        topBar = { if (barsVisible) TopAppBar(
                 title = {
                     if (isSearchVisible) {
                         OutlinedTextField(
@@ -337,6 +362,12 @@ fun PdfViewerScreen(
                         .collect { textSelection = null }
                 }
 
+                // Hide bars when scrolling starts
+                LaunchedEffect(Unit) {
+                    snapshotFlow { lazyListState.isScrollInProgress && barsVisible }
+                        .collect { if (it) barsVisible = false }
+                }
+
                 val density = LocalDensity.current
                 val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
                 val marginPx = with(density) { 8.dp.toPx() }
@@ -366,7 +397,7 @@ fun PdfViewerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(innerPadding)
+                        .let { if (barsVisible) it.padding(innerPadding) else it }
                         .background(Color(0xFFE0E0E0))
                         .pointerInput(Unit) {
                             detectTapGestures { textSelection = null }
@@ -561,7 +592,7 @@ fun PdfViewerScreen(
                                                                     destinationHighlight = null
                                                                 }
                                                             }
-                                                            null -> {}
+                                                            null -> barsVisible = !barsVisible
                                                         }
                                                     },
                                                     onLongPress = { longPressOffset ->
