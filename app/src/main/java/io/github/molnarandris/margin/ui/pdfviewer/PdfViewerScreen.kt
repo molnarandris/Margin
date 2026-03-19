@@ -85,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
@@ -486,6 +487,16 @@ fun PdfViewerScreen(
                                             currentInkStroke = points.toList()
                                         }
                                         if (pageSize != IntSize.Zero) {
+                                            val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
+                                            val pageStrokes = completedInkStrokes[index]
+                                            if (isScribble(points) && !pageStrokes.isNullOrEmpty()) {
+                                                val intersecting = pageStrokes.filter { strokeIntersectsScribble(it.points, normalizedPoints) }
+                                                if (intersecting.isNotEmpty()) {
+                                                    viewModel.eraseInkStrokes(index, intersecting.map { it.id })
+                                                    currentInkStroke = null
+                                                    return@awaitEachGesture
+                                                }
+                                            }
                                             // A single tap produces one point; duplicate it so addInkAnnotation
                                             // treats it as a zero-length stroke (rendered as a dot).
                                             val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
@@ -647,15 +658,16 @@ fun PdfViewerScreen(
                                         Canvas(modifier = Modifier.matchParentSize()) {
                                             val strokePx = size.width / page.nativeWidth
                                             for (stroke in pageStrokes) {
-                                                if (stroke.size < 2) continue
-                                                val x0 = stroke.first().x * size.width
-                                                val y0 = stroke.first().y * size.height
-                                                if (stroke.first() == stroke.last()) {
+                                                val pts = stroke.points
+                                                if (pts.size < 2) continue
+                                                val x0 = pts.first().x * size.width
+                                                val y0 = pts.first().y * size.height
+                                                if (pts.first() == pts.last()) {
                                                     drawCircle(Color.Black, radius = strokePx / 2f, center = Offset(x0, y0))
                                                 } else {
                                                     val path = Path().apply {
                                                         moveTo(x0, y0)
-                                                        stroke.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
+                                                        pts.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
                                                     }
                                                     drawPath(path, color = Color.Black, style = Stroke(width = strokePx))
                                                 }
@@ -831,4 +843,38 @@ fun PdfViewerScreen(
             }
         }
     }
+}
+
+private fun isScribble(points: List<Offset>): Boolean {
+    if (points.size < 3) return false
+    var totalLength = 0f
+    for (i in 1 until points.size) {
+        val dx = points[i].x - points[i-1].x
+        val dy = points[i].y - points[i-1].y
+        totalLength += sqrt(dx * dx + dy * dy)
+    }
+    if (totalLength < 20f) return false
+    var reversals = 0
+    for (i in 1 until points.size - 1) {
+        val dx1 = points[i].x - points[i-1].x; val dy1 = points[i].y - points[i-1].y
+        val dx2 = points[i+1].x - points[i].x; val dy2 = points[i+1].y - points[i].y
+        if (dx1 * dx2 + dy1 * dy2 < 0f) reversals++
+    }
+    return reversals >= 2
+}
+
+private fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): Boolean {
+    fun cross(o: Offset, a: Offset, b: Offset) =
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    val d1 = cross(b1, b2, a1); val d2 = cross(b1, b2, a2)
+    val d3 = cross(a1, a2, b1); val d4 = cross(a1, a2, b2)
+    return (d1 > 0 && d2 < 0 || d1 < 0 && d2 > 0) &&
+           (d3 > 0 && d4 < 0 || d3 < 0 && d4 > 0)
+}
+
+private fun strokeIntersectsScribble(strokePts: List<Offset>, scribbleNorm: List<Offset>): Boolean {
+    for (i in 0 until strokePts.size - 1)
+        for (j in 0 until scribbleNorm.size - 1)
+            if (segmentsIntersect(strokePts[i], strokePts[i+1], scribbleNorm[j], scribbleNorm[j+1])) return true
+    return false
 }

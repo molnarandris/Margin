@@ -11,12 +11,17 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.cos.COSArray
+import com.tom_roush.pdfbox.cos.COSDictionary
+import com.tom_roush.pdfbox.cos.COSFloat
+import com.tom_roush.pdfbox.cos.COSNumber
+import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import androidx.compose.ui.geometry.Offset
@@ -62,6 +67,8 @@ data class SearchState(
     val matches: List<SearchMatch> = emptyList(),
     val currentIndex: Int = -1    // -1 = no results
 )
+
+data class InkStroke(val id: Int, val points: List<Offset>)
 
 data class PdfPage(
     val bitmap: Bitmap,
@@ -146,8 +153,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
 
-    private val _completedInkStrokes = MutableStateFlow<Map<Int, List<List<Offset>>>>(emptyMap())
-    val completedInkStrokes: StateFlow<Map<Int, List<List<Offset>>>> = _completedInkStrokes.asStateFlow()
+    private var nextStrokeId = 0
+    private val _completedInkStrokes = MutableStateFlow<Map<Int, List<InkStroke>>>(emptyMap())
+    val completedInkStrokes: StateFlow<Map<Int, List<InkStroke>>> = _completedInkStrokes.asStateFlow()
 
     private var pfd: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
@@ -313,8 +321,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun addInkAnnotation(pageIndex: Int, points: List<Offset>, displayWidth: Int, displayHeight: Int) {
         val normalized = points.map { Offset(it.x / displayWidth, it.y / displayHeight) }
+        val strokeId = nextStrokeId++
         _completedInkStrokes.update { map ->
-            map + (pageIndex to (map[pageIndex].orEmpty() + listOf(normalized)))
+            map + (pageIndex to (map[pageIndex].orEmpty() + InkStroke(strokeId, normalized)))
         }
         viewModelScope.launch(Dispatchers.IO) {
             val uri = docUri ?: return@launch
@@ -328,18 +337,33 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val pageW = pdPage.mediaBox.width
                 val pageH = pdPage.mediaBox.height
 
-                val contentStream = PDPageContentStream(
-                    pdDoc, pdPage, PDPageContentStream.AppendMode.APPEND, true, true
-                )
-                contentStream.setStrokingColor(0f, 0f, 0f)
-                contentStream.setLineWidth(1f)
-                contentStream.setLineCapStyle(1) // round cap — zero-length stroke renders as a dot
-                contentStream.moveTo(normalized[0].x * pageW, pageH - normalized[0].y * pageH)
-                for (i in 1 until normalized.size) {
-                    contentStream.lineTo(normalized[i].x * pageW, pageH - normalized[i].y * pageH)
+                // Build flat float array: [x0, y0, x1, y1, ...]
+                val coords = FloatArray(normalized.size * 2) { i ->
+                    val pt = normalized[i / 2]
+                    if (i % 2 == 0) pt.x * pageW else pageH - pt.y * pageH
                 }
-                contentStream.stroke()
-                contentStream.close()
+                val minX = coords.filterIndexed { i, _ -> i % 2 == 0 }.min()
+                val minY = coords.filterIndexed { i, _ -> i % 2 != 0 }.min()
+                val maxX = coords.filterIndexed { i, _ -> i % 2 == 0 }.max()
+                val maxY = coords.filterIndexed { i, _ -> i % 2 != 0 }.max()
+
+                val innerList = COSArray().apply { coords.forEach { add(COSFloat(it)) } }
+                val outerList = COSArray().apply { add(innerList) }
+                val rectArr = COSArray().apply {
+                    listOf(minX, minY, maxX, maxY).forEach { add(COSFloat(it)) }
+                }
+                val colorArr = COSArray().apply {
+                    listOf(0f, 0f, 0f).forEach { add(COSFloat(it)) }
+                }
+                val annDict = COSDictionary().apply {
+                    setName(COSName.TYPE, "Annot")
+                    setName(COSName.SUBTYPE, "Ink")
+                    setItem(COSName.INKLIST, outerList)
+                    setItem(COSName.RECT, rectArr)
+                    setItem(COSName.getPDFName("C"), colorArr)
+                    setString(COSName.NM, "ink-$strokeId")
+                }
+                pdPage.annotations.add(PDAnnotationUnknown(annDict))
 
                 app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
                 pdDoc.close()
@@ -347,6 +371,34 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 // Re-open renderer without re-rendering the bitmap
                 pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 renderer = PdfRenderer(pfd!!)
+            }
+        }
+    }
+
+    fun eraseInkStrokes(pageIndex: Int, strokeIds: List<Int>) {
+        // Remove from overlay immediately
+        _completedInkStrokes.update { map ->
+            val remaining = map[pageIndex].orEmpty().filter { it.id !in strokeIds }
+            if (remaining.isEmpty()) map - pageIndex else map + (pageIndex to remaining)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val pdPage = pdDoc.getPage(pageIndex)
+                val namesToRemove = strokeIds.map { "ink-$it" }.toSet()
+                val annotations = pdPage.annotations
+                val toRemove = annotations.filter { it.annotationName in namesToRemove }
+                annotations.removeAll(toRemove)
+
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.close()
+
+                reloadPage(uri, app, pageIndex)
             }
         }
     }
@@ -393,6 +445,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
         val state = _uiState.value as? PdfViewerUiState.Ready ?: return
         val newPages = state.pages.toMutableList()
+        var reloadedStrokes: List<InkStroke> = emptyList()
 
         // Re-render bitmap
         newRenderer.openPage(pageIndex).use { page ->
@@ -404,10 +457,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             )
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-            // Re-extract words and highlights
+            // Re-extract words, highlights, and ink strokes
             val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
             val words = extractWords(pdDoc, pageIndex)
             val highlights = extractHighlights(pdDoc, pageIndex, page.height.toFloat())
+            reloadedStrokes = extractInkStrokes(pdDoc, pageIndex, page.width.toFloat(), page.height.toFloat())
             pdDoc.close()
 
             newPages[pageIndex] = newPages[pageIndex].copy(
@@ -419,7 +473,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
         withContext(Dispatchers.Main) {
             _uiState.value = state.copy(pages = newPages)
-            _completedInkStrokes.update { it - pageIndex }
+            if (reloadedStrokes.isEmpty())
+                _completedInkStrokes.update { it - pageIndex }
+            else
+                _completedInkStrokes.update { it + (pageIndex to reloadedStrokes) }
         }
     }
 
@@ -440,6 +497,34 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             extractor.endPage   = pageIndex + 1
             extractor.getText(pdDoc)
             extractor.words.toList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun extractInkStrokes(pdDoc: PDDocument, pageIndex: Int, pageW: Float, pageH: Float): List<InkStroke> {
+        return try {
+            val pdPage = pdDoc.getPage(pageIndex)
+            val result = mutableListOf<InkStroke>()
+            for (ann in pdPage.annotations) {
+                if (ann.getCOSObject().getNameAsString(COSName.SUBTYPE) != "Ink") continue
+                val name = ann.annotationName ?: continue
+                val id = name.removePrefix("ink-").toIntOrNull() ?: continue
+                val outerArr = ann.getCOSObject().getDictionaryObject(COSName.INKLIST) as? COSArray ?: continue
+                for (i in 0 until outerArr.size()) {
+                    val innerArr = outerArr.getObject(i) as? COSArray ?: continue
+                    val points = mutableListOf<Offset>()
+                    var j = 0
+                    while (j + 1 < innerArr.size()) {
+                        val x = (innerArr.getObject(j) as? COSNumber)?.floatValue() ?: break
+                        val y = (innerArr.getObject(j + 1) as? COSNumber)?.floatValue() ?: break
+                        points.add(Offset(x / pageW, 1f - y / pageH))
+                        j += 2
+                    }
+                    if (points.isNotEmpty()) result.add(InkStroke(id, points))
+                }
+            }
+            result
         } catch (e: Exception) {
             emptyList()
         }
@@ -545,6 +630,16 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 withContext(Dispatchers.Main) {
                     _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, author)
+                }
+
+                // Extract ink strokes from saved annotations and populate overlay
+                val allInkStrokes = (0 until pageCount).associate { i ->
+                    i to extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+                }.filter { it.value.isNotEmpty() }
+                withContext(Dispatchers.Main) {
+                    _completedInkStrokes.value = allInkStrokes
+                    val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
+                    if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
                 }
 
                 // Extract words (slow) and emit final state
