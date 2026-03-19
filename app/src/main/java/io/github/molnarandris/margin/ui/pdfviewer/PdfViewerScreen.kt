@@ -553,7 +553,7 @@ fun PdfViewerScreen(
                                                                 val destYPx = target.y / page.nativeHeight * displayedPageHeight
                                                                 val viewportHeight = lazyListState.layoutInfo.viewportSize.height
                                                                 val scrollOffset = (destYPx - viewportHeight / 2f).coerceAtLeast(0f).roundToInt()
-                                                                lazyListState.animateScrollToItem(target.pageNumber, scrollOffset)
+                                                                lazyListState.scrollToItem(target.pageNumber, scrollOffset)
 
                                                                 if (!target.x.isNaN() && !target.y.isNaN()) {
                                                                     destinationHighlight = DestinationHighlight(target.pageNumber, target.x, target.y)
