@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -588,7 +590,7 @@ fun PdfViewerScreen(
                                             currentPage = target.pageNumber
                                             if (!target.x.isNaN() && !target.y.isNaN()) {
                                                 destinationHighlight = DestinationHighlight(target.pageNumber, target.x, target.y)
-                                                delay(500)
+                                                delay(700)
                                                 destinationHighlight = null
                                             }
                                         }
@@ -825,9 +827,9 @@ private fun PageContent(
             Canvas(modifier = Modifier.matchParentSize()) {
                 groupIntoLines(overlayChars).forEach { lineChars ->
                     val l = lineChars.minOf { it.bounds.left }                     / page.nativeWidth  * size.width
-                    val t = lineChars.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
-                    val r = lineChars.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
-                    val b = lineChars.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
+                    val t = lineChars.minOf { it.bounds.top - it.bounds.height() * 1.6f } / page.nativeHeight * size.height
+                    val r = lineChars.maxOf { it.bounds.right }                        / page.nativeWidth  * size.width
+                    val b = lineChars.maxOf { it.bounds.top + it.bounds.height() * 0.5f } / page.nativeHeight * size.height
                     drawRect(Color(0xFFBBDEFB), Offset(l, t), Size(r - l, b - t), blendMode = BlendMode.Multiply)
                 }
                 if (sel.existingHighlight == null) {
@@ -857,13 +859,17 @@ private fun PageContent(
                     val endY   = lastChar.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
-                    val hitStart = (downPos - Offset(startX, startY)).getDistance() < touchThreshPx
-                    val hitEnd   = (downPos - Offset(endX, endY)).getDistance()   < touchThreshPx
+                    val distStart = (downPos - Offset(startX, startY)).getDistance()
+                    val distEnd   = (downPos - Offset(endX, endY)).getDistance()
+                    val hitStart  = distStart < touchThreshPx
+                    val hitEnd    = distEnd   < touchThreshPx
                     if (!hitStart && !hitEnd) {
                         onTextSelectionChanged(null)
                         return@awaitEachGesture
                     }
+                    val draggingStart = hitStart && (!hitEnd || distStart <= distEnd)
                     down.consume()
+                    var lastDragChars: List<TextChar>? = null
                     onIsDraggingHandleChanged(true)
                     try {
                         do {
@@ -880,7 +886,7 @@ private fun PageContent(
                             } ?: continue
                             val lines = groupIntoLines(allChars)
                             val nearestCX = nearest.bounds.centerX()
-                            val newDragChars = if (hitStart) {
+                            val newDragChars = if (draggingStart) {
                                 val endChar = sel.selectedChars.last()
                                 val endLineIdx = lines.indexOfFirst { line -> endChar in line }
                                 val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
@@ -897,12 +903,13 @@ private fun PageContent(
                                 else nearest
                                 charsFrom(startChar, clampedNearest, allChars)
                             }
+                            lastDragChars = newDragChars
                             onDragCharsChanged(newDragChars)
                         } while (event.changes.any { it.pressed })
                     } finally {
                         onIsDraggingHandleChanged(false)
                     }
-                    val committed = dragChars
+                    val committed = lastDragChars
                     if (committed != null) {
                         onTextSelectionChanged(sel.copy(selectedChars = committed))
                         onDragCharsChanged(null)
@@ -925,20 +932,42 @@ private fun PageContent(
                         }
                         .onSizeChanged { onPopupHeightPxChanged(it.height) }
                     ) {
-                        Card(elevation = CardDefaults.cardElevation(4.dp)) {
-                            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Card(
+                            elevation = CardDefaults.cardElevation(4.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color.White)
+                        ) {
+                            Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
                                 if (sel.existingHighlight == null) {
-                                    TextButton(onClick = {
+                                    IconButton(onClick = {
                                         onAddHighlight(sel)
                                         onTextSelectionChanged(null)
-                                    }) { Text("Highlight") }
+                                    }) {
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .background(Color(0xFFFFEB3B), shape = RoundedCornerShape(4.dp))
+                                        ) {
+                                            Text("A", style = MaterialTheme.typography.titleMedium)
+                                        }
+                                    }
                                 } else {
-                                    TextButton(onClick = {
+                                    IconButton(onClick = {
                                         onDeleteHighlight(sel.existingHighlight)
                                         onTextSelectionChanged(null)
-                                    }) { Text("Delete") }
+                                    }) {
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .background(Color(0xFFFFEB3B), shape = RoundedCornerShape(4.dp))
+                                        ) {
+                                            Text("A", style = MaterialTheme.typography.titleMedium,
+                                                color = Color(0xFF9E9E9E))
+                                        }
+                                    }
                                 }
-                                TextButton(onClick = {
+                                IconButton(onClick = {
                                     val selectedSet = sel.selectedChars.toHashSet()
                                     val text = page.words
                                         .filter { w -> w.chars.any { it in selectedSet } }
@@ -947,7 +976,9 @@ private fun PageContent(
                                         }
                                     onCopy(text)
                                     onTextSelectionChanged(null)
-                                }) { Text("Copy") }
+                                }) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                                }
                             }
                         }
                     }

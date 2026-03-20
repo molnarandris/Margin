@@ -303,8 +303,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val lineBounds = lines.map { lineChars ->
             val left  = lineChars.minOf { it.bounds.left }
             val right = lineChars.maxOf { it.bounds.right }
-            val top   = lineChars.minOf { it.bounds.top - it.bounds.height() }
-            val bot   = lineChars.maxOf { it.bounds.top }
+            val top   = lineChars.minOf { it.bounds.top - it.bounds.height() * 1.6f }
+            val bot   = lineChars.maxOf { it.bounds.top + it.bounds.height() * 0.5f }
             RectF(left, top, right, bot)
         }
         val optimisticHighlight = PdfHighlight(pageIndex, lineBounds, annotationIndex = -1)
@@ -332,8 +332,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 lines.forEachIndexed { i, lineChars ->
                     val left        = lineChars.minOf { it.bounds.left }
                     val right       = lineChars.maxOf { it.bounds.right }
-                    val prVisualTop = lineChars.minOf { it.bounds.top - it.bounds.height() }
-                    val prVisualBot = lineChars.maxOf { it.bounds.top }
+                    val prVisualTop = lineChars.minOf { it.bounds.top - it.bounds.height() * 1.6f }
+                    val prVisualBot = lineChars.maxOf { it.bounds.top + it.bounds.height() * 0.5f }
                     val pbTop = pageH - prVisualTop
                     val pbBot = pageH - prVisualBot
                     val base = i * 8
@@ -344,8 +344,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 val allLeft      = selectedChars.minOf { it.bounds.left }
                 val allRight     = selectedChars.maxOf { it.bounds.right }
-                val allVisualTop = selectedChars.minOf { it.bounds.top - it.bounds.height() }
-                val allVisualBot = selectedChars.maxOf { it.bounds.top }
+                val allVisualTop = selectedChars.minOf { it.bounds.top - it.bounds.height() * 1.6f }
+                val allVisualBot = selectedChars.maxOf { it.bounds.top + it.bounds.height() * 0.5f }
                 val ann = PDAnnotationTextMarkup(PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT).apply {
                     quadPoints = quads
                     color = PDColor(floatArrayOf(1f, 1f, 0f), PDDeviceRGB.INSTANCE)
