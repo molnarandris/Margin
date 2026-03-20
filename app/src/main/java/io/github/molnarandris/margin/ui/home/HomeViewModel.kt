@@ -8,8 +8,11 @@ import androidx.lifecycle.viewModelScope
 import io.github.molnarandris.margin.data.PdfFile
 import io.github.molnarandris.margin.data.PdfRepository
 import io.github.molnarandris.margin.data.PreferencesRepository
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -26,6 +29,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+
+    private val _openPdfEvent = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
+    val openPdfEvent: SharedFlow<Uri> = _openPdfEvent.asSharedFlow()
 
     init {
         viewModelScope.launch {
@@ -80,6 +86,16 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val newPdf = pdf.copy(title = title, author = author)
                 _uiState.value = state.copy(pdfs = state.pdfs.map { if (it.uri == pdf.uri) newPdf else it })
             }
+        }
+    }
+
+    fun createNote() {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        viewModelScope.launch {
+            val uri = pdfRepo.createBlankPdf(state.directoryUri) ?: return@launch
+            val pdfs = pdfRepo.listPdfs(state.directoryUri)
+            _uiState.value = state.copy(pdfs = pdfs)
+            _openPdfEvent.emit(uri)
         }
     }
 

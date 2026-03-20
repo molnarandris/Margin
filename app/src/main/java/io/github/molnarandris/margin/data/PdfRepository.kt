@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -70,6 +72,20 @@ class PdfRepository(private val context: Context) {
                 false
             }
         }
+
+    suspend fun createBlankPdf(directoryUri: Uri): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val dir = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
+            val destFile = dir.createFile("application/pdf", "Note") ?: return@withContext null
+            val doc = PDDocument()
+            doc.addPage(PDPage(PDRectangle.A4))
+            context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
+            doc.close()
+            destFile.uri
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     private fun resolveFileName(uri: Uri): String {
         val cursor = context.contentResolver.query(uri, null, null, null, null)
