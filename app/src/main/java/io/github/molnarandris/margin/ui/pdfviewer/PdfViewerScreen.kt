@@ -21,17 +21,14 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
@@ -65,7 +62,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalView
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.Alignment
@@ -104,8 +100,15 @@ import kotlin.math.sqrt
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+
+private data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
+private data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
+private data class PageTextSelection(
+    val pageIndex: Int,
+    val selectedChars: List<TextChar>,
+    val existingHighlight: PdfHighlight? = null
+)
 
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
@@ -149,7 +152,16 @@ fun PdfViewerScreen(
         }
     }
     DisposableEffect(Unit) {
+        val gestureZonePx = (32 * view.resources.displayMetrics.density).toInt()
+        val listener = android.view.View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            v.systemGestureExclusionRects = listOf(
+                android.graphics.Rect(v.width - gestureZonePx, 0, v.width, v.height)
+            )
+        }
+        view.addOnLayoutChangeListener(listener)
         onDispose {
+            view.removeOnLayoutChangeListener(listener)
+            view.systemGestureExclusionRects = emptyList()
             val window = (view.context as Activity).window
             WindowInsetsControllerCompat(window, view).show(WindowInsetsCompat.Type.systemBars())
         }
@@ -302,25 +314,19 @@ fun PdfViewerScreen(
             }
 
             is PdfViewerUiState.Ready -> {
-                data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
-                data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
-                data class TextSelection(
-                    val pageIndex: Int,
-                    val selectedChars: List<TextChar>,
-                    val existingHighlight: PdfHighlight? = null
-                )
-
                 var scale by remember { mutableFloatStateOf(1f) }
                 var offsetX by remember { mutableFloatStateOf(0f) }
                 var destinationHighlight by remember { mutableStateOf<DestinationHighlight?>(null) }
                 var jumpOrigin by remember { mutableStateOf<JumpOrigin?>(null) }
-                var textSelection by remember { mutableStateOf<TextSelection?>(null) }
+                var textSelection by remember { mutableStateOf<PageTextSelection?>(null) }
                 // Used during handle dragging so we don't update textSelection on every event
                 var dragChars by remember { mutableStateOf<List<TextChar>?>(null) }
                 var isDraggingHandle by remember { mutableStateOf(false) }
                 var popupHeightPx by remember { mutableStateOf(0) }
+                var viewportHeightPx by remember { mutableFloatStateOf(0f) }
+                var offsetY by remember { mutableFloatStateOf(0f) }
                 val currentSelectionRef = rememberUpdatedState(textSelection)
-                val lazyListState = rememberLazyListState()
+                var currentPage by remember { mutableStateOf(0) }
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
                 val clipboardManager = LocalClipboardManager.current
@@ -350,8 +356,9 @@ fun PdfViewerScreen(
                 BackHandler(enabled = jumpOrigin != null) {
                     val origin = jumpOrigin!!
                     jumpOrigin = null
+                    scale = 1f; offsetX = 0f; offsetY = 0f
+                    currentPage = origin.pageIndex
                     coroutineScope.launch {
-                        lazyListState.scrollToItem(origin.pageIndex, origin.scrollOffset)
                         destinationHighlight = DestinationHighlight(origin.pageIndex, origin.highlightX, origin.highlightY)
                         delay(500)
                         destinationHighlight = null
@@ -359,31 +366,17 @@ fun PdfViewerScreen(
                 }
 
                 LaunchedEffect(Unit) {
-                    snapshotFlow { scale to lazyListState.firstVisibleItemIndex }
+                    snapshotFlow { scale to currentPage }
                         .debounce(300)
-                        .collect { (currentScale, _) ->
-                            val visibleIndices = lazyListState.layoutInfo.visibleItemsInfo.map { it.index }
-                            viewModel.updateRenderScale(currentScale, visibleIndices)
+                        .collect { (currentScale, page) ->
+                            viewModel.updateRenderScale(currentScale, listOf(page))
                         }
                 }
 
-                // Track visible page for phase-2 highlight prioritization
-                LaunchedEffect(Unit) {
-                    snapshotFlow { lazyListState.firstVisibleItemIndex }
-                        .collect { viewModel.onVisiblePageChanged(it) }
-                }
-
-                // Dismiss selection on scroll
-                LaunchedEffect(Unit) {
-                    snapshotFlow { lazyListState.firstVisibleItemScrollOffset }
-                        .drop(1)
-                        .collect { textSelection = null }
-                }
-
-                // Hide bars when scrolling starts
-                LaunchedEffect(Unit) {
-                    snapshotFlow { lazyListState.isScrollInProgress && barsVisible }
-                        .collect { if (it) barsVisible = false }
+                // Clear selection and update visible page when page changes (zoom preserved for swipe)
+                LaunchedEffect(currentPage) {
+                    textSelection = null
+                    viewModel.onVisiblePageChanged(currentPage)
                 }
 
                 val density = LocalDensity.current
@@ -396,20 +389,15 @@ fun PdfViewerScreen(
                     val match = searchState.matches.getOrNull(searchState.currentIndex) ?: return@LaunchedEffect
                     val page = state.pages.getOrNull(match.pageIndex) ?: return@LaunchedEffect
                     val displayedPageWidth = screenWidthPx * scale - 2 * marginPx
-                    val displayedPageHeight = displayedPageWidth * page.nativeHeight / page.nativeWidth
 
                     val matchCenterX = (match.wordBounds.minOf { it.left } + match.wordBounds.maxOf { it.right }) / 2f
-                    val matchCenterY = (match.wordBounds.minOf { it.top - it.height() } + match.wordBounds.maxOf { it.top }) / 2f
-
                     val destXPx = matchCenterX / page.nativeWidth * displayedPageWidth
                     val newOffsetX = screenWidthPx * scale / 2f - marginPx - destXPx
                     val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
                     offsetX = if (scale > 1f) newOffsetX.coerceIn(-maxOffsetX, maxOffsetX) else 0f
 
-                    val destYPx = matchCenterY / page.nativeHeight * displayedPageHeight
-                    val viewportHeight = lazyListState.layoutInfo.viewportSize.height
-                    val scrollOffset = (destYPx - viewportHeight / 2f).coerceAtLeast(0f).roundToInt()
-                    lazyListState.animateScrollToItem(match.pageIndex, scrollOffset)
+                    scale = 1f; offsetX = 0f; offsetY = 0f
+                    currentPage = match.pageIndex
                 }
 
                 Box(
@@ -417,58 +405,62 @@ fun PdfViewerScreen(
                         .fillMaxSize()
                         .let { if (barsVisible) it.padding(innerPadding) else it }
                         .background(Color(0xFFE0E0E0))
-                        .pointerInput(Unit) {
-                            detectTapGestures { textSelection = null }
-                        }
+                        .onSizeChanged { viewportHeightPx = it.height.toFloat() }
                         .pointerInput(screenWidthPx, marginPx) {
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = false)
                                 var wasMultiTouch = false
                                 var everMultiTouch = false
-                                var singleTouchAxis = 0  // 0 = undecided, 1 = horizontal, -1 = vertical
+                                var singleTouchAxis = 0
                                 var accumDx = 0f
                                 var accumDy = 0f
+                                var totalDx = 0f
                                 do {
                                     val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val pg = state.pages.getOrNull(currentPage)
                                     if (event.changes.count { it.pressed } >= 2) {
                                         if (wasMultiTouch) {
                                             val zoomChange = event.calculateZoom()
                                             val panChange = event.calculatePan()
-
                                             val touches = event.changes.filter { it.pressed }
                                             val span = if (touches.size >= 2)
                                                 (touches[0].position - touches[1].position).getDistance()
                                             else Float.MAX_VALUE
-
                                             val spanChangePx = span * kotlin.math.abs(zoomChange - 1f)
                                             val closeFingers = span < 250f
                                             if (!closeFingers || spanChangePx > 8f) {
                                                 val centroid = event.calculateCentroid(useCurrent = false)
-
-                                                val newScale = (scale * zoomChange).coerceIn(0.5f, 5f)
+                                                val minScale = if (pg != null && viewportHeightPx > 0f)
+                                                    (viewportHeightPx * pg.nativeWidth / (screenWidthPx * pg.nativeHeight)).coerceAtMost(1f)
+                                                else 1f
+                                                val newScale = (scale * zoomChange).coerceIn(minScale, 5f)
                                                 val actualZoom = newScale / scale
-
                                                 val contentLeft = screenWidthPx * (1f - scale) / 2f + offsetX
                                                 val newContentLeft = centroid.x * (1f - actualZoom) +
                                                         contentLeft * actualZoom + panChange.x
                                                 val rawOffsetX = newContentLeft - screenWidthPx * (1f - newScale) / 2f
-
                                                 scale = newScale
                                                 offsetX = if (newScale > 1f) {
                                                     val maxOffsetX = marginPx + screenWidthPx * (newScale - 1f) / 2f
                                                     rawOffsetX.coerceIn(-maxOffsetX, maxOffsetX)
                                                 } else 0f
-
-                                                val anchorY = lazyListState.layoutInfo
-                                                    .visibleItemsInfo.firstOrNull()?.offset?.toFloat() ?: 0f
-                                                val scrollDelta = (centroid.y - anchorY) * (actualZoom - 1f) - panChange.y
-                                                lazyListState.dispatchRawDelta(scrollDelta)
+                                                if (pg != null) {
+                                                    val maxOffsetY = ((screenWidthPx * newScale - 2 * marginPx) *
+                                                        pg.nativeHeight / pg.nativeWidth -
+                                                        viewportHeightPx).coerceAtLeast(0f) / 2f
+                                                    offsetY = (offsetY - panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                                }
                                             } else {
                                                 offsetX = if (scale > 1f) {
                                                     val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
                                                     (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
                                                 } else 0f
-                                                lazyListState.dispatchRawDelta(-panChange.y)
+                                                if (pg != null) {
+                                                    val maxOffsetY = ((screenWidthPx * scale - 2 * marginPx) *
+                                                        pg.nativeHeight / pg.nativeWidth -
+                                                        viewportHeightPx).coerceAtLeast(0f) / 2f
+                                                    offsetY = (offsetY - panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                                }
                                             }
                                         }
                                         wasMultiTouch = true
@@ -476,7 +468,6 @@ fun PdfViewerScreen(
                                         singleTouchAxis = 0
                                         event.changes.forEach { it.consume() }
                                     } else if (!everMultiTouch && !isDraggingHandle) {
-                                        // Single-finger: detect axis then handle horizontal scroll (not for stylus)
                                         val change = event.changes.firstOrNull { it.type != PointerType.Stylus }
                                         if (change != null) {
                                             val dx = change.position.x - change.previousPosition.x
@@ -484,14 +475,33 @@ fun PdfViewerScreen(
                                             if (singleTouchAxis == 0) {
                                                 accumDx += dx
                                                 accumDy += dy
-                                                val distSq = accumDx * accumDx + accumDy * accumDy
-                                                if (distSq > 64f) {  // 8px threshold
+                                                if (accumDx * accumDx + accumDy * accumDy > 64f)
                                                     singleTouchAxis = if (kotlin.math.abs(accumDx) > kotlin.math.abs(accumDy)) 1 else -1
+                                            }
+                                            if (scale > 1f) {
+                                                if (singleTouchAxis == 1) {
+                                                    val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
+                                                    offsetX = (offsetX + dx).coerceIn(-maxOffsetX, maxOffsetX)
+                                                    change.consume()
+                                                }
+                                                if (singleTouchAxis == -1 && pg != null) {
+                                                    val pageH = (screenWidthPx * scale - 2 * marginPx) *
+                                                        pg.nativeHeight / pg.nativeWidth
+                                                    val maxOffsetY = ((pageH - viewportHeightPx) / 2f).coerceAtLeast(0f)
+                                                    offsetY = (offsetY - dy).coerceIn(-maxOffsetY, maxOffsetY)
+                                                    change.consume()
+                                                }
+                                            } else if (singleTouchAxis == -1 && pg != null) {
+                                                val pageH = (screenWidthPx * scale - 2 * marginPx) *
+                                                    pg.nativeHeight / pg.nativeWidth
+                                                val maxOffsetY = ((pageH - viewportHeightPx) / 2f).coerceAtLeast(0f)
+                                                if (maxOffsetY > 0f) {
+                                                    offsetY = (offsetY - dy).coerceIn(-maxOffsetY, maxOffsetY)
+                                                    change.consume()
                                                 }
                                             }
-                                            if (singleTouchAxis == 1 && scale > 1f) {
-                                                val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
-                                                offsetX = (offsetX + dx).coerceIn(-maxOffsetX, maxOffsetX)
+                                            if (singleTouchAxis == 1 && scale <= 1f) {
+                                                totalDx += dx
                                                 change.consume()
                                             }
                                         }
@@ -499,400 +509,445 @@ fun PdfViewerScreen(
                                         wasMultiTouch = false
                                     }
                                 } while (event.changes.any { it.pressed })
+                                // After gesture ends: if horizontal swipe at scale<=1, change page instantly
+                                if (singleTouchAxis == 1 && scale <= 1f) {
+                                    val threshold = screenWidthPx * 0.2f
+                                    fun maxOffsetYForPage(pg: PdfPage): Float {
+                                        val pageH = (screenWidthPx * scale - 2 * marginPx) * pg.nativeHeight / pg.nativeWidth
+                                        return ((pageH - viewportHeightPx) / 2f).coerceAtLeast(0f)
+                                    }
+                                    if (totalDx < -threshold && currentPage < state.pages.size - 1) {
+                                        currentPage++
+                                        val pg = state.pages.getOrNull(currentPage)
+                                        offsetY = if (pg != null) -maxOffsetYForPage(pg) else 0f
+                                    } else if (totalDx > threshold && currentPage > 0) {
+                                        currentPage--
+                                        val pg = state.pages.getOrNull(currentPage)
+                                        offsetY = if (pg != null) maxOffsetYForPage(pg) else 0f
+                                    }
+                                }
                             }
                         }
                 ) {
-                    LazyColumn(
-                        state = lazyListState,
-                        modifier = Modifier
-                            .requiredWidth(contentWidthDp)
-                            .fillMaxHeight()
-                            .align(Alignment.TopCenter)
-                            .offset { IntOffset(offsetX.roundToInt(), 0) },
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                    val page = state.pages.getOrNull(currentPage) ?: return@Box
+                    val pageDisplayHeightDp = with(density) {
+                        (screenWidthPx * scale * page.nativeHeight / page.nativeWidth).toDp()
+                    }
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        itemsIndexed(state.pages) { index, page ->
-                            var pageSize by remember { mutableStateOf(IntSize.Zero) }
-                            var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
-                            Card(
-                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                                shape = RectangleShape,
-                                colors = CardDefaults.cardColors(containerColor = Color.White)
-                            ) {
-                                Box(modifier = Modifier.pointerInput(page.nativeWidth, page.nativeHeight) {
-                                    awaitEachGesture {
-                                        val down = awaitFirstDown(requireUnconsumed = false)
-                                        if (down.type != PointerType.Stylus) return@awaitEachGesture
-                                        down.consume()
-                                        val points = mutableListOf(down.position)
-                                        currentInkStroke = listOf(down.position)
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                                            val change = event.changes.find { it.id == down.id } ?: break
-                                            if (!change.pressed) break
-                                            change.consume()
-                                            points.add(change.position)
-                                            currentInkStroke = points.toList()
-                                        }
-                                        if (pageSize != IntSize.Zero) {
-                                            val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
-                                            val pageStrokes = completedInkStrokes[index]
-                                            if (isScribble(points) && !pageStrokes.isNullOrEmpty()) {
-                                                val intersecting = pageStrokes.filter {
-                                                    strokeIntersectsScribble(it.points, normalizedPoints) ||
-                                                    strokeNearScribble(it.points, points, pageSize, 10f)
-                                                }
-                                                if (intersecting.isNotEmpty()) {
-                                                    viewModel.eraseInkStrokes(index, intersecting.map { it.id })
-                                                    currentInkStroke = null
-                                                    return@awaitEachGesture
-                                                }
-                                            }
-                                            // A single tap produces one point; duplicate it so addInkAnnotation
-                                            // treats it as a zero-length stroke (rendered as a dot).
-                                            val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
-                                            viewModel.addInkAnnotation(index, stroke, pageSize.width, pageSize.height)
-                                        }
-                                        currentInkStroke = null
-                                    }
-                                }) {
-                                    Image(
-                                        bitmap = page.bitmap.asImageBitmap(),
-                                        contentDescription = "Page ${index + 1}",
-                                        contentScale = ContentScale.FillWidth,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .onSizeChanged { pageSize = it }
-                                            .pointerInput(page.links, page.words, page.highlights) {
-                                                detectTapGestures(
-                                                    onDoubleTap = { barsVisible = !barsVisible },
-                                                    onTap = { tapOffset ->
-                                                        // Dismiss selection on tap
-                                                        if (currentSelectionRef.value != null) {
-                                                            textSelection = null
-                                                            return@detectTapGestures
-                                                        }
-                                                        if (pageSize == IntSize.Zero) return@detectTapGestures
-                                                        val pdfX = tapOffset.x / pageSize.width * page.nativeWidth
-                                                        val pdfY = tapOffset.y / pageSize.height * page.nativeHeight
-                                                        val hit = page.links.firstOrNull { link ->
-                                                            link.bounds.any { rect -> rect.contains(pdfX, pdfY) }
-                                                        }
-                                                        when (val target = hit?.target) {
-                                                            is LinkTarget.Url -> context.startActivity(
-                                                                Intent(Intent.ACTION_VIEW, target.uri)
-                                                            )
-                                                            is LinkTarget.Goto -> coroutineScope.launch {
-                                                                val rect = hit.bounds.first()
-                                                                jumpOrigin = JumpOrigin(
-                                                                    pageIndex = lazyListState.firstVisibleItemIndex,
-                                                                    scrollOffset = lazyListState.firstVisibleItemScrollOffset,
-                                                                    highlightX = rect.centerX(),
-                                                                    highlightY = rect.centerY()
-                                                                )
-
-                                                                val displayedPageWidth = screenWidthPx * scale - 2 * marginPx
-                                                                val displayedPageHeight = displayedPageWidth * page.nativeHeight / page.nativeWidth
-
-                                                                val destXPx = target.x / page.nativeWidth * displayedPageWidth
-                                                                val newOffsetX = screenWidthPx * scale / 2f - marginPx - destXPx
-                                                                val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
-                                                                offsetX = if (scale > 1f) newOffsetX.coerceIn(-maxOffsetX, maxOffsetX) else 0f
-
-                                                                val destYPx = target.y / page.nativeHeight * displayedPageHeight
-                                                                val viewportHeight = lazyListState.layoutInfo.viewportSize.height
-                                                                val scrollOffset = (destYPx - viewportHeight / 2f).coerceAtLeast(0f).roundToInt()
-                                                                lazyListState.scrollToItem(target.pageNumber, scrollOffset)
-
-                                                                if (!target.x.isNaN() && !target.y.isNaN()) {
-                                                                    destinationHighlight = DestinationHighlight(target.pageNumber, target.x, target.y)
-                                                                    delay(500)
-                                                                    destinationHighlight = null
-                                                                }
-                                                            }
-                                                            null -> {}
-                                                        }
-                                                    },
-                                                    onLongPress = { longPressOffset ->
-                                                        if (pageSize == IntSize.Zero) return@detectTapGestures
-                                                        val prX = longPressOffset.x / pageSize.width * page.nativeWidth
-                                                        val prY = longPressOffset.y / pageSize.height * page.nativeHeight
-
-                                                        // 1. Check existing highlights first
-                                                        // PdfHighlight.bounds: top=visualTop, bottom=baseline (standard Y-down).
-                                                        // Extend bottom by 30% of height to cover descenders.
-                                                        val hitHighlight = page.highlights.firstOrNull { h ->
-                                                            h.bounds.any { rect ->
-                                                                rect.left <= prX && prX <= rect.right &&
-                                                                rect.top <= prY && prY <= rect.bottom + rect.height() * 0.3f
-                                                            }
-                                                        }
-                                                        if (hitHighlight != null) {
-                                                            // TextChar.bounds uses non-standard coords: top=baseline, bottom=baseline+capHeight.
-                                                            // Visual region of char: [top-height(), top]. Match against highlight's [r.top, r.bottom].
-                                                            val allChars = page.words.flatMap { it.chars }
-                                                            val hlChars = allChars.filter { c ->
-                                                                hitHighlight.bounds.any { r ->
-                                                                    val cVisualTop = c.bounds.top - c.bounds.height()
-                                                                    val cVisualBot = c.bounds.top
-                                                                    c.bounds.right > r.left && c.bounds.left < r.right &&
-                                                                    cVisualBot > r.top && cVisualTop < r.bottom
-                                                                }
-                                                            }
-                                                            textSelection = TextSelection(index, hlChars, hitHighlight)
-                                                            return@detectTapGestures
-                                                        }
-
-                                                        // 2. Check text words
-                                                        val hitWord = page.words.firstOrNull { w ->
-                                                            val visualTop = w.bounds.top - w.bounds.height()
-                                                            prX >= w.bounds.left && prX <= w.bounds.right &&
-                                                            prY >= visualTop && prY <= w.bounds.bottom
-                                                        }
-                                                        if (hitWord != null) {
-                                                            textSelection = TextSelection(index, hitWord.chars)
-                                                        }
-                                                        // 3. No text → do nothing
-                                                    }
-                                                )
-                                            }
-                                    )
-                                    // Yellow highlights — rendered in page-local space so they zoom/scroll with the page
-                                    if (page.highlights.isNotEmpty()) {
-                                        Canvas(modifier = Modifier.matchParentSize()) {
-                                            page.highlights.forEach { h ->
-                                                h.bounds.forEach { r ->
-                                                    val l = r.left   / page.nativeWidth  * size.width
-                                                    val t = r.top    / page.nativeHeight * size.height
-                                                    val rr = r.right  / page.nativeWidth  * size.width
-                                                    val b = r.bottom / page.nativeHeight * size.height
-                                                    drawRect(Color(0xFFFFF176), Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    val highlight = destinationHighlight
-                                    if (highlight != null && highlight.pageIndex == index && pageSize != IntSize.Zero) {
-                                        Canvas(modifier = Modifier.matchParentSize()) {
-                                            val cx = highlight.x / page.nativeWidth * size.width
-                                            val cy = highlight.y / page.nativeHeight * size.height
-                                            drawCircle(
-                                                color = Color(0xFFFF9999),
-                                                radius = 24.dp.toPx(),
-                                                center = Offset(cx, cy),
-                                                blendMode = BlendMode.Multiply
+                        Card(
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                            shape = RectangleShape,
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            modifier = Modifier
+                                .requiredWidth(contentWidthDp)
+                                .requiredHeight(pageDisplayHeightDp)
+                                .offset { IntOffset(offsetX.roundToInt(), -offsetY.roundToInt()) }
+                        ) {
+                            PageContent(
+                                page = page,
+                                index = currentPage,
+                                completedInkStrokes = completedInkStrokes,
+                                penColor = penColor,
+                                penThickness = penThickness,
+                                searchState = searchState,
+                                textSelection = textSelection,
+                                dragChars = dragChars,
+                                destinationHighlight = destinationHighlight,
+                                popupHeightPx = popupHeightPx,
+                                density = density,
+                                currentSelectionRef = currentSelectionRef,
+                                onBarsVisibleToggle = { barsVisible = !barsVisible },
+                                onTextSelectionChanged = { textSelection = it },
+                                onDragCharsChanged = { dragChars = it },
+                                onIsDraggingHandleChanged = { isDraggingHandle = it },
+                                onPopupHeightPxChanged = { popupHeightPx = it },
+                                onAddHighlight = { viewModel.addHighlight(it.pageIndex, it.selectedChars) },
+                                onDeleteHighlight = { viewModel.deleteHighlight(it) },
+                                onCopy = { clipboardManager.setText(AnnotatedString(it)) },
+                                onEraseInkStrokes = { pageIdx, ids -> viewModel.eraseInkStrokes(pageIdx, ids) },
+                                onAddInkAnnotation = { pageIdx, stroke, w, h -> viewModel.addInkAnnotation(pageIdx, stroke, w, h) },
+                                onLinkTap = { target, linkBoundsFirstRect ->
+                                    when (target) {
+                                        is LinkTarget.Url -> context.startActivity(Intent(Intent.ACTION_VIEW, target.uri))
+                                        is LinkTarget.Goto -> coroutineScope.launch {
+                                            jumpOrigin = JumpOrigin(
+                                                pageIndex = currentPage,
+                                                scrollOffset = 0,
+                                                highlightX = linkBoundsFirstRect.centerX(),
+                                                highlightY = linkBoundsFirstRect.centerY()
                                             )
-                                        }
-                                    }
-
-                                    // Search match highlights
-                                    val pageSearchMatches = searchState.matches.filter { it.pageIndex == index }
-                                    val currentMatch = searchState.matches.getOrNull(searchState.currentIndex)
-                                    if (pageSearchMatches.isNotEmpty()) {
-                                        Canvas(modifier = Modifier.matchParentSize()) {
-                                            pageSearchMatches.forEach { match ->
-                                                val isCurrent = (match === currentMatch)
-                                                val color = if (isCurrent) Color(0xFF00C853) else Color(0xFFB9F6CA)
-                                                match.wordBounds.forEach { r ->
-                                                    val l  = r.left                / page.nativeWidth  * size.width
-                                                    val t  = (r.top - r.height())  / page.nativeHeight * size.height
-                                                    val rr = r.right               / page.nativeWidth  * size.width
-                                                    val b  = r.top                 / page.nativeHeight * size.height
-                                                    drawRect(color, Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
-                                                }
+                                            val displayedPageWidth = screenWidthPx * scale - 2 * marginPx
+                                            val destXPx = target.x / page.nativeWidth * displayedPageWidth
+                                            val newOffsetX = screenWidthPx * scale / 2f - marginPx - destXPx
+                                            val maxOffsetX = marginPx + screenWidthPx * (scale - 1f) / 2f
+                                            offsetX = if (scale > 1f) newOffsetX.coerceIn(-maxOffsetX, maxOffsetX) else 0f
+                                            scale = 1f; offsetX = 0f; offsetY = 0f
+                                            currentPage = target.pageNumber
+                                            if (!target.x.isNaN() && !target.y.isNaN()) {
+                                                destinationHighlight = DestinationHighlight(target.pageNumber, target.x, target.y)
+                                                delay(500)
+                                                destinationHighlight = null
                                             }
                                         }
                                     }
+                                },
+                                groupIntoLines = ::groupIntoLines,
+                                charsFrom = ::charsFrom
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
-                                    // Completed ink strokes (normalized coords → screen coords)
-                                    val pageStrokes = completedInkStrokes[index]
-                                    if (!pageStrokes.isNullOrEmpty()) {
-                                        Canvas(modifier = Modifier.matchParentSize()) {
-                                            val baseStrokePx = size.width / page.nativeWidth
-                                            for (stroke in pageStrokes) {
-                                                val pts = stroke.points
-                                                if (pts.size < 2) continue
-                                                val c = stroke.color.composeColor
-                                                val w = baseStrokePx * stroke.thickness.multiplier
-                                                val x0 = pts.first().x * size.width
-                                                val y0 = pts.first().y * size.height
-                                                if (pts.first() == pts.last()) {
-                                                    drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
-                                                } else {
-                                                    val path = Path().apply {
-                                                        moveTo(x0, y0)
-                                                        pts.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
-                                                    }
-                                                    drawPath(path, color = c, style = Stroke(width = w))
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // In-progress ink stroke overlay
-                                    val inkStroke = currentInkStroke
-                                    if (inkStroke != null && inkStroke.size >= 2) {
-                                        Canvas(modifier = Modifier.matchParentSize()) {
-                                            val baseStrokePx = size.width / page.nativeWidth
-                                            val c = penColor.composeColor
-                                            val w = baseStrokePx * penThickness.multiplier
-                                            if (inkStroke.first() == inkStroke.last()) {
-                                                drawCircle(c, radius = w / 2f, center = inkStroke.first())
-                                            } else {
-                                                val path = Path().apply {
-                                                    moveTo(inkStroke.first().x, inkStroke.first().y)
-                                                    inkStroke.drop(1).forEach { lineTo(it.x, it.y) }
-                                                }
-                                                drawPath(path, color = c, style = Stroke(width = w))
-                                            }
-                                        }
-                                    }
-
-                                    // Blue selection overlay — rendered in page-local space so it zooms/scrolls with the page
-                                    val sel = textSelection
-                                    if (sel != null && sel.pageIndex == index) {
-                                        val displayedChars = dragChars ?: sel.selectedChars
-                                        val overlayChars = if (sel.existingHighlight != null) sel.selectedChars else displayedChars
-
-                                        Canvas(modifier = Modifier.matchParentSize()) {
-                                            groupIntoLines(overlayChars).forEach { lineChars ->
-                                                val l = lineChars.minOf { it.bounds.left }                     / page.nativeWidth  * size.width
-                                                val t = lineChars.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
-                                                val r = lineChars.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
-                                                val b = lineChars.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
-                                                drawRect(Color(0xFFBBDEFB), Offset(l, t), Size(r - l, b - t), blendMode = BlendMode.Multiply)
-                                            }
-                                            if (sel.existingHighlight == null) {
-                                                val firstChar = displayedChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left }))
-                                                val lastChar  = displayedChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right }))
-                                                firstChar?.let {
-                                                    drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
-                                                        center = Offset(it.bounds.left  / page.nativeWidth  * size.width,
-                                                                        it.bounds.top / page.nativeHeight * size.height))
-                                                }
-                                                lastChar?.let {
-                                                    drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
-                                                        center = Offset(it.bounds.right  / page.nativeWidth  * size.width,
-                                                                        it.bounds.top / page.nativeHeight * size.height))
-                                                }
-                                            }
-                                        }
-
-                                        Box(modifier = Modifier.matchParentSize().pointerInput(sel) {
-                                            val touchThreshPx = 32.dp.toPx()
-                                            awaitEachGesture {
-                                                val currentChars = dragChars ?: sel.selectedChars
-                                                val firstChar = currentChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left })) ?: return@awaitEachGesture
-                                                val lastChar  = currentChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right })) ?: return@awaitEachGesture
-
-                                                val startX = firstChar.bounds.left  / page.nativeWidth  * pageSize.width.toFloat()
-                                                val startY = firstChar.bounds.top   / page.nativeHeight * pageSize.height.toFloat()
-                                                val endX   = lastChar.bounds.right  / page.nativeWidth  * pageSize.width.toFloat()
-                                                val endY   = lastChar.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
-
-                                                val down = awaitFirstDown(requireUnconsumed = false)
-                                                val downPos = down.position
-                                                val hitStart = (downPos - Offset(startX, startY)).getDistance() < touchThreshPx
-                                                val hitEnd   = (downPos - Offset(endX, endY)).getDistance()   < touchThreshPx
-
-                                                if (!hitStart && !hitEnd) {
-                                                    textSelection = null
-                                                    return@awaitEachGesture
-                                                }
-                                                down.consume()
-                                                isDraggingHandle = true
-                                                try {
-                                                    do {
-                                                        val event = awaitPointerEvent()
-                                                        event.changes.forEach { it.consume() }
-                                                        val pos = event.changes.firstOrNull()?.position ?: continue
-                                                        val prX = pos.x / pageSize.width.toFloat()  * page.nativeWidth
-                                                        val prY = pos.y / pageSize.height.toFloat() * page.nativeHeight
-                                                        val allChars = page.words.flatMap { it.chars }
-                                                        val nearest = allChars.minByOrNull { c ->
-                                                            val cx = (c.bounds.left + c.bounds.right) / 2f
-                                                            val cy = (c.bounds.top  + c.bounds.bottom) / 2f
-                                                            (cx - prX) * (cx - prX) + (cy - prY) * (cy - prY)
-                                                        } ?: continue
-                                                        val lines = groupIntoLines(allChars)
-                                                        val nearestCX = nearest.bounds.centerX()
-                                                        dragChars = if (hitStart) {
-                                                            val endChar = sel.selectedChars.last()
-                                                            val endLineIdx = lines.indexOfFirst { line -> endChar in line }
-                                                            val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
-                                                            val clampedNearest = if (endLineIdx >= 0 && nearestLineIdx > endLineIdx)
-                                                                lines[endLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
-                                                            else nearest
-                                                            charsFrom(clampedNearest, endChar, allChars)
-                                                        } else {
-                                                            val startChar = sel.selectedChars.first()
-                                                            val startLineIdx = lines.indexOfFirst { line -> startChar in line }
-                                                            val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
-                                                            val clampedNearest = if (startLineIdx >= 0 && nearestLineIdx < startLineIdx)
-                                                                lines[startLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
-                                                            else nearest
-                                                            charsFrom(startChar, clampedNearest, allChars)
-                                                        }
-                                                    } while (event.changes.any { it.pressed })
-                                                } finally {
-                                                    isDraggingHandle = false
-                                                }
-
-                                                val committed = dragChars
-                                                if (committed != null) {
-                                                    textSelection = sel.copy(selectedChars = committed)
-                                                    dragChars = null
-                                                }
-                                            }
-                                        })
-
-                                        if (displayedChars.isNotEmpty()) {
-                                            val selTopPR    = displayedChars.minOf { it.bounds.top - it.bounds.height() }
-                                            val selCenterX  = (displayedChars.minOf { it.bounds.left } + displayedChars.maxOf { it.bounds.right }) / 2f
-                                            val popupLocalX = (selCenterX / page.nativeWidth  * pageSize.width.toFloat()).roundToInt()
-                                            val popupLocalY = (selTopPR   / page.nativeHeight * pageSize.height.toFloat()).roundToInt()
-                                            with(density) {
-                                                val gapPx = 8.dp.roundToPx()
-                                                Box(modifier = Modifier
-                                                    .offset {
-                                                        IntOffset(
-                                                            popupLocalX - 60.dp.roundToPx(),
-                                                            popupLocalY - gapPx - popupHeightPx
-                                                        )
-                                                    }
-                                                    .onSizeChanged { popupHeightPx = it.height }
-                                                ) {
-                                                    Card(elevation = CardDefaults.cardElevation(4.dp)) {
-                                                        Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                                            if (sel.existingHighlight == null) {
-                                                                TextButton(onClick = {
-                                                                    viewModel.addHighlight(sel.pageIndex, sel.selectedChars)
-                                                                    textSelection = null
-                                                                }) { Text("Highlight") }
-                                                            } else {
-                                                                TextButton(onClick = {
-                                                                    viewModel.deleteHighlight(sel.existingHighlight)
-                                                                    textSelection = null
-                                                                }) { Text("Delete") }
-                                                            }
-                                                            TextButton(onClick = {
-                                                                val selectedSet = sel.selectedChars.toHashSet()
-                                                                val text = page.words
-                                                                    .filter { w -> w.chars.any { it in selectedSet } }
-                                                                    .joinToString(" ") { w ->
-                                                                        w.chars.filter { it in selectedSet }.joinToString("") { it.text }
-                                                                    }
-                                                                clipboardManager.setText(AnnotatedString(text))
-                                                                textSelection = null
-                                                            }) { Text("Copy") }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+@Composable
+private fun PageContent(
+    page: PdfPage,
+    index: Int,
+    completedInkStrokes: Map<Int, List<InkStroke>>,
+    penColor: StrokeColor,
+    penThickness: StrokeThickness,
+    searchState: SearchState,
+    textSelection: PageTextSelection?,
+    dragChars: List<TextChar>?,
+    destinationHighlight: DestinationHighlight?,
+    popupHeightPx: Int,
+    density: androidx.compose.ui.unit.Density,
+    currentSelectionRef: androidx.compose.runtime.State<PageTextSelection?>, // State used via .value in tap handler
+    onBarsVisibleToggle: () -> Unit,
+    onTextSelectionChanged: (PageTextSelection?) -> Unit,
+    onDragCharsChanged: (List<TextChar>?) -> Unit,
+    onIsDraggingHandleChanged: (Boolean) -> Unit,
+    onPopupHeightPxChanged: (Int) -> Unit,
+    onAddHighlight: (PageTextSelection) -> Unit,
+    onDeleteHighlight: (PdfHighlight) -> Unit,
+    onCopy: (String) -> Unit,
+    onEraseInkStrokes: (Int, List<Int>) -> Unit,
+    onAddInkAnnotation: (Int, List<Offset>, Int, Int) -> Unit,
+    onLinkTap: (LinkTarget, android.graphics.RectF) -> Unit,
+    groupIntoLines: (List<TextChar>) -> List<List<TextChar>>,
+    charsFrom: (TextChar, TextChar, List<TextChar>) -> List<TextChar>
+) {
+    var pageSize by remember { mutableStateOf(IntSize.Zero) }
+    var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
+    val completedInkStrokesRef = rememberUpdatedState(completedInkStrokes)
+    val indexRef = rememberUpdatedState(index)
+    Box(modifier = Modifier.pointerInput(page.nativeWidth, page.nativeHeight) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            if (down.type != PointerType.Stylus && down.type != PointerType.Eraser) return@awaitEachGesture
+            down.consume()
+            val points = mutableListOf(down.position)
+            currentInkStroke = (listOf(down.position))
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.find { it.id == down.id } ?: break
+                if (!change.pressed) break
+                change.consume()
+                points.add(change.position)
+                currentInkStroke = (points.toList())
+            }
+            if (pageSize != IntSize.Zero) {
+                val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
+                val currentIndex = indexRef.value
+                val pageStrokes = completedInkStrokesRef.value[currentIndex]
+                if (isScribble(points)) {
+                    val intersecting = pageStrokes?.filter {
+                        strokeIntersectsScribble(it.points, normalizedPoints) ||
+                        strokeNearScribble(it.points, points, pageSize, 10f)
+                    } ?: emptyList()
+                    if (intersecting.isNotEmpty()) {
+                        onEraseInkStrokes(currentIndex, intersecting.map { it.id })
+                    }
+                    currentInkStroke = null
+                    return@awaitEachGesture
+                }
+                val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
+                onAddInkAnnotation(currentIndex, stroke, pageSize.width, pageSize.height)
+            }
+            currentInkStroke = (null)
+        }
+    }) {
+        Image(
+            bitmap = page.bitmap.asImageBitmap(),
+            contentDescription = "Page ${index + 1}",
+            contentScale = ContentScale.FillWidth,
+            modifier = Modifier
+                .fillMaxWidth()
+                .onSizeChanged { pageSize = it }
+                .pointerInput(page.links, page.words, page.highlights) {
+                    detectTapGestures(
+                        onDoubleTap = { onBarsVisibleToggle() },
+                        onTap = { tapOffset ->
+                            if (currentSelectionRef.value != null) {
+                                onTextSelectionChanged(null)
+                                return@detectTapGestures
+                            }
+                            if (pageSize == IntSize.Zero) return@detectTapGestures
+                            val pdfX = tapOffset.x / pageSize.width * page.nativeWidth
+                            val pdfY = tapOffset.y / pageSize.height * page.nativeHeight
+                            val hit = page.links.firstOrNull { link ->
+                                link.bounds.any { rect -> rect.contains(pdfX, pdfY) }
+                            }
+                            when (val target = hit?.target) {
+                                is LinkTarget.Url -> onLinkTap(target, hit.bounds.first())
+                                is LinkTarget.Goto -> onLinkTap(target, hit.bounds.first())
+                                null -> {}
+                            }
+                        },
+                        onLongPress = { longPressOffset ->
+                            if (pageSize == IntSize.Zero) return@detectTapGestures
+                            val prX = longPressOffset.x / pageSize.width * page.nativeWidth
+                            val prY = longPressOffset.y / pageSize.height * page.nativeHeight
+                            val hitHighlight = page.highlights.firstOrNull { h ->
+                                h.bounds.any { rect ->
+                                    rect.left <= prX && prX <= rect.right &&
+                                    rect.top <= prY && prY <= rect.bottom + rect.height() * 0.3f
+                                }
+                            }
+                            if (hitHighlight != null) {
+                                val allChars = page.words.flatMap { it.chars }
+                                val hlChars = allChars.filter { c ->
+                                    hitHighlight.bounds.any { r ->
+                                        val cVisualTop = c.bounds.top - c.bounds.height()
+                                        val cVisualBot = c.bounds.top
+                                        c.bounds.right > r.left && c.bounds.left < r.right &&
+                                        cVisualBot > r.top && cVisualTop < r.bottom
                                     }
                                 }
+                                onTextSelectionChanged(PageTextSelection(index, hlChars, hitHighlight))
+                                return@detectTapGestures
+                            }
+                            val hitWord = page.words.firstOrNull { w ->
+                                val visualTop = w.bounds.top - w.bounds.height()
+                                prX >= w.bounds.left && prX <= w.bounds.right &&
+                                prY >= visualTop && prY <= w.bounds.bottom
+                            }
+                            if (hitWord != null) {
+                                onTextSelectionChanged(PageTextSelection(index, hitWord.chars))
+                            }
+                        }
+                    )
+                }
+        )
+        if (page.highlights.isNotEmpty()) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                page.highlights.forEach { h ->
+                    h.bounds.forEach { r ->
+                        val l = r.left   / page.nativeWidth  * size.width
+                        val t = r.top    / page.nativeHeight * size.height
+                        val rr = r.right  / page.nativeWidth  * size.width
+                        val b = r.bottom / page.nativeHeight * size.height
+                        drawRect(Color(0xFFFFF176), Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
+                    }
+                }
+            }
+        }
+        val highlight = destinationHighlight
+        if (highlight != null && highlight.pageIndex == index && pageSize != IntSize.Zero) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val cx = highlight.x / page.nativeWidth * size.width
+                val cy = highlight.y / page.nativeHeight * size.height
+                drawCircle(
+                    color = Color(0xFFFF9999),
+                    radius = 24.dp.toPx(),
+                    center = Offset(cx, cy),
+                    blendMode = BlendMode.Multiply
+                )
+            }
+        }
+        val pageSearchMatches = searchState.matches.filter { it.pageIndex == index }
+        val currentMatch = searchState.matches.getOrNull(searchState.currentIndex)
+        if (pageSearchMatches.isNotEmpty()) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                pageSearchMatches.forEach { match ->
+                    val isCurrent = (match === currentMatch)
+                    val color = if (isCurrent) Color(0xFF00C853) else Color(0xFFB9F6CA)
+                    match.wordBounds.forEach { r ->
+                        val l  = r.left                / page.nativeWidth  * size.width
+                        val t  = (r.top - r.height())  / page.nativeHeight * size.height
+                        val rr = r.right               / page.nativeWidth  * size.width
+                        val b  = r.top                 / page.nativeHeight * size.height
+                        drawRect(color, Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
+                    }
+                }
+            }
+        }
+        val pageStrokes = completedInkStrokes[index]
+        if (!pageStrokes.isNullOrEmpty()) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val baseStrokePx = size.width / page.nativeWidth
+                for (stroke in pageStrokes) {
+                    val pts = stroke.points
+                    if (pts.size < 2) continue
+                    val c = stroke.color.composeColor
+                    val w = baseStrokePx * stroke.thickness.multiplier
+                    val x0 = pts.first().x * size.width
+                    val y0 = pts.first().y * size.height
+                    if (pts.first() == pts.last()) {
+                        drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
+                    } else {
+                        val path = Path().apply {
+                            moveTo(x0, y0)
+                            pts.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
+                        }
+                        drawPath(path, color = c, style = Stroke(width = w))
+                    }
+                }
+            }
+        }
+        val inkStroke = currentInkStroke
+        if (inkStroke != null && inkStroke.size >= 2) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val baseStrokePx = size.width / page.nativeWidth
+                val c = penColor.composeColor
+                val w = baseStrokePx * penThickness.multiplier
+                if (inkStroke.first() == inkStroke.last()) {
+                    drawCircle(c, radius = w / 2f, center = inkStroke.first())
+                } else {
+                    val path = Path().apply {
+                        moveTo(inkStroke.first().x, inkStroke.first().y)
+                        inkStroke.drop(1).forEach { lineTo(it.x, it.y) }
+                    }
+                    drawPath(path, color = c, style = Stroke(width = w))
+                }
+            }
+        }
+        val sel = textSelection
+        if (sel != null && sel.pageIndex == index) {
+            val displayedChars = dragChars ?: sel.selectedChars
+            val overlayChars = if (sel.existingHighlight != null) sel.selectedChars else displayedChars
+            Canvas(modifier = Modifier.matchParentSize()) {
+                groupIntoLines(overlayChars).forEach { lineChars ->
+                    val l = lineChars.minOf { it.bounds.left }                     / page.nativeWidth  * size.width
+                    val t = lineChars.minOf { it.bounds.top - it.bounds.height() } / page.nativeHeight * size.height
+                    val r = lineChars.maxOf { it.bounds.right }                    / page.nativeWidth  * size.width
+                    val b = lineChars.maxOf { it.bounds.top }                      / page.nativeHeight * size.height
+                    drawRect(Color(0xFFBBDEFB), Offset(l, t), Size(r - l, b - t), blendMode = BlendMode.Multiply)
+                }
+                if (sel.existingHighlight == null) {
+                    val firstChar = displayedChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left }))
+                    val lastChar  = displayedChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right }))
+                    firstChar?.let {
+                        drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
+                            center = Offset(it.bounds.left  / page.nativeWidth  * size.width,
+                                            it.bounds.top / page.nativeHeight * size.height))
+                    }
+                    lastChar?.let {
+                        drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
+                            center = Offset(it.bounds.right  / page.nativeWidth  * size.width,
+                                            it.bounds.top / page.nativeHeight * size.height))
+                    }
+                }
+            }
+            Box(modifier = Modifier.matchParentSize().pointerInput(sel) {
+                val touchThreshPx = 32.dp.toPx()
+                awaitEachGesture {
+                    val currentChars = dragChars ?: sel.selectedChars
+                    val firstChar = currentChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left })) ?: return@awaitEachGesture
+                    val lastChar  = currentChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right })) ?: return@awaitEachGesture
+                    val startX = firstChar.bounds.left  / page.nativeWidth  * pageSize.width.toFloat()
+                    val startY = firstChar.bounds.top   / page.nativeHeight * pageSize.height.toFloat()
+                    val endX   = lastChar.bounds.right  / page.nativeWidth  * pageSize.width.toFloat()
+                    val endY   = lastChar.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val downPos = down.position
+                    val hitStart = (downPos - Offset(startX, startY)).getDistance() < touchThreshPx
+                    val hitEnd   = (downPos - Offset(endX, endY)).getDistance()   < touchThreshPx
+                    if (!hitStart && !hitEnd) {
+                        onTextSelectionChanged(null)
+                        return@awaitEachGesture
+                    }
+                    down.consume()
+                    onIsDraggingHandleChanged(true)
+                    try {
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                            val pos = event.changes.firstOrNull()?.position ?: continue
+                            val prX = pos.x / pageSize.width.toFloat()  * page.nativeWidth
+                            val prY = pos.y / pageSize.height.toFloat() * page.nativeHeight
+                            val allChars = page.words.flatMap { it.chars }
+                            val nearest = allChars.minByOrNull { c ->
+                                val cx = (c.bounds.left + c.bounds.right) / 2f
+                                val cy = (c.bounds.top  + c.bounds.bottom) / 2f
+                                (cx - prX) * (cx - prX) + (cy - prY) * (cy - prY)
+                            } ?: continue
+                            val lines = groupIntoLines(allChars)
+                            val nearestCX = nearest.bounds.centerX()
+                            val newDragChars = if (hitStart) {
+                                val endChar = sel.selectedChars.last()
+                                val endLineIdx = lines.indexOfFirst { line -> endChar in line }
+                                val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
+                                val clampedNearest = if (endLineIdx >= 0 && nearestLineIdx > endLineIdx)
+                                    lines[endLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
+                                else nearest
+                                charsFrom(clampedNearest, endChar, allChars)
+                            } else {
+                                val startChar = sel.selectedChars.first()
+                                val startLineIdx = lines.indexOfFirst { line -> startChar in line }
+                                val nearestLineIdx = lines.indexOfFirst { line -> nearest in line }
+                                val clampedNearest = if (startLineIdx >= 0 && nearestLineIdx < startLineIdx)
+                                    lines[startLineIdx].minByOrNull { kotlin.math.abs(it.bounds.centerX() - nearestCX) } ?: nearest
+                                else nearest
+                                charsFrom(startChar, clampedNearest, allChars)
+                            }
+                            onDragCharsChanged(newDragChars)
+                        } while (event.changes.any { it.pressed })
+                    } finally {
+                        onIsDraggingHandleChanged(false)
+                    }
+                    val committed = dragChars
+                    if (committed != null) {
+                        onTextSelectionChanged(sel.copy(selectedChars = committed))
+                        onDragCharsChanged(null)
+                    }
+                }
+            })
+            if (displayedChars.isNotEmpty()) {
+                val selTopPR    = displayedChars.minOf { it.bounds.top - it.bounds.height() }
+                val selCenterX  = (displayedChars.minOf { it.bounds.left } + displayedChars.maxOf { it.bounds.right }) / 2f
+                val popupLocalX = (selCenterX / page.nativeWidth  * pageSize.width.toFloat()).roundToInt()
+                val popupLocalY = (selTopPR   / page.nativeHeight * pageSize.height.toFloat()).roundToInt()
+                with(density) {
+                    val gapPx = 8.dp.roundToPx()
+                    Box(modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                popupLocalX - 60.dp.roundToPx(),
+                                popupLocalY - gapPx - popupHeightPx
+                            )
+                        }
+                        .onSizeChanged { onPopupHeightPxChanged(it.height) }
+                    ) {
+                        Card(elevation = CardDefaults.cardElevation(4.dp)) {
+                            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                if (sel.existingHighlight == null) {
+                                    TextButton(onClick = {
+                                        onAddHighlight(sel)
+                                        onTextSelectionChanged(null)
+                                    }) { Text("Highlight") }
+                                } else {
+                                    TextButton(onClick = {
+                                        onDeleteHighlight(sel.existingHighlight)
+                                        onTextSelectionChanged(null)
+                                    }) { Text("Delete") }
+                                }
+                                TextButton(onClick = {
+                                    val selectedSet = sel.selectedChars.toHashSet()
+                                    val text = page.words
+                                        .filter { w -> w.chars.any { it in selectedSet } }
+                                        .joinToString(" ") { w ->
+                                            w.chars.filter { it in selectedSet }.joinToString("") { it.text }
+                                        }
+                                    onCopy(text)
+                                    onTextSelectionChanged(null)
+                                }) { Text("Copy") }
                             }
                         }
                     }
@@ -977,7 +1032,7 @@ private fun isScribble(points: List<Offset>): Boolean {
         val dot = dx1 * dx2 + dy1 * dy2
         if (dot < 0f && dot * dot > 0.0302f * (dx1*dx1 + dy1*dy1) * (dx2*dx2 + dy2*dy2)) reversals++
     }
-    return reversals >= 5
+    return reversals >= 3
 }
 
 private fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): Boolean {
@@ -1013,8 +1068,13 @@ private fun strokeNearScribble(
     strokeNorm: List<Offset>, scribblePx: List<Offset>, pageSize: IntSize, thresholdPx: Float
 ): Boolean {
     val strokePx = strokeNorm.map { Offset(it.x * pageSize.width, it.y * pageSize.height) }
+    // Check stroke points near scribble segments
     for (pt in strokePx)
         for (j in 0 until scribblePx.size - 1)
             if (pointToSegmentDist(pt, scribblePx[j], scribblePx[j + 1]) <= thresholdPx) return true
+    // Check scribble points near stroke segments (catches parallel/collinear cases)
+    for (pt in scribblePx)
+        for (j in 0 until strokePx.size - 1)
+            if (pointToSegmentDist(pt, strokePx[j], strokePx[j + 1]) <= thresholdPx) return true
     return false
 }
