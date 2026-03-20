@@ -297,6 +297,26 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun addHighlight(pageIndex: Int, selectedChars: List<TextChar>) {
+        // Phase 1: compute bounds and show highlight immediately (no IO)
+        val sortedChars = selectedChars.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+        val lines = groupCharsIntoLines(sortedChars)
+        val lineBounds = lines.map { lineChars ->
+            val left  = lineChars.minOf { it.bounds.left }
+            val right = lineChars.maxOf { it.bounds.right }
+            val top   = lineChars.minOf { it.bounds.top - it.bounds.height() }
+            val bot   = lineChars.maxOf { it.bounds.top }
+            RectF(left, top, right, bot)
+        }
+        val optimisticHighlight = PdfHighlight(pageIndex, lineBounds, annotationIndex = -1)
+        _uiState.update { state ->
+            if (state !is PdfViewerUiState.Ready) return@update state
+            val newPages = state.pages.toMutableList()
+            val page = newPages[pageIndex]
+            newPages[pageIndex] = page.copy(highlights = page.highlights + optimisticHighlight)
+            state.copy(pages = newPages)
+        }
+
+        // Phase 2: save to PDF and update annotationIndex in background
         viewModelScope.launch(Dispatchers.IO) {
             val uri = docUri ?: return@launch
             val app = getApplication<Application>()
@@ -308,18 +328,14 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val pdPage = pdDoc.getPage(pageIndex)
                 val pageH = pdPage.mediaBox.height
 
-                val sortedChars = selectedChars.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-                val lines = groupCharsIntoLines(sortedChars)
                 val quads = FloatArray(lines.size * 8)
                 lines.forEachIndexed { i, lineChars ->
                     val left        = lineChars.minOf { it.bounds.left }
                     val right       = lineChars.maxOf { it.bounds.right }
-                    // bounds.top = visual bottom (baseline); bounds.top - height() = visual top
-                    // mirrors the canvas rendering formula exactly
                     val prVisualTop = lineChars.minOf { it.bounds.top - it.bounds.height() }
                     val prVisualBot = lineChars.maxOf { it.bounds.top }
-                    val pbTop = pageH - prVisualTop   // PDF Y-up: visual top → larger value
-                    val pbBot = pageH - prVisualBot   // PDF Y-up: visual bottom → smaller value
+                    val pbTop = pageH - prVisualTop
+                    val pbBot = pageH - prVisualBot
                     val base = i * 8
                     quads[base+0] = left;  quads[base+1] = pbTop
                     quads[base+2] = right; quads[base+3] = pbTop
@@ -338,9 +354,23 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 pdPage.annotations.add(ann)
 
                 app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+
+                // Re-extract highlights to get correct annotationIndex (needed for deletion)
+                val newHighlights = extractHighlights(pdDoc, pageIndex, pageH)
                 pdDoc.close()
 
-                reloadPage(uri, app, pageIndex)
+                // Reopen renderer/pfd for future rendering
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
+
+                // Replace optimistic highlight with real one (correct annotationIndex)
+                _uiState.update { state ->
+                    if (state !is PdfViewerUiState.Ready) return@update state
+                    val newPages = state.pages.toMutableList()
+                    newPages[pageIndex] = newPages[pageIndex].copy(highlights = newHighlights)
+                    state.copy(pages = newPages)
+                }
             }
         }
     }
@@ -359,6 +389,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             val uri = docUri ?: return@launch
             val app = getApplication<Application>()
             renderMutex.withLock {
+                // Abort if stroke was erased from the overlay before we got the lock
+                if (_completedInkStrokes.value[pageIndex]?.none { it.id == strokeId } != false) return@withLock
+
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
