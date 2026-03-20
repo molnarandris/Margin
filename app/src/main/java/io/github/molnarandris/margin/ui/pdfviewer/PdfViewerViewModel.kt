@@ -25,6 +25,7 @@ import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,7 +69,23 @@ data class SearchState(
     val currentIndex: Int = -1    // -1 = no results
 )
 
-data class InkStroke(val id: Int, val points: List<Offset>)
+enum class StrokeColor(val composeColor: Color, val pdfRgb: FloatArray) {
+    BLACK(Color.Black,               floatArrayOf(0f, 0f, 0f)),
+    RED  (Color(0xFFE53935.toInt()), floatArrayOf(0.898f, 0.224f, 0.208f)),
+    GREEN(Color(0xFF43A047.toInt()), floatArrayOf(0.263f, 0.627f, 0.278f)),
+    BLUE (Color(0xFF1E88E5.toInt()), floatArrayOf(0.118f, 0.533f, 0.898f))
+}
+
+enum class StrokeThickness(val multiplier: Float) {
+    THIN(0.5f), MEDIUM(1.0f), THICK(2.5f)
+}
+
+data class InkStroke(
+    val id: Int,
+    val points: List<Offset>,
+    val color: StrokeColor = StrokeColor.BLACK,
+    val thickness: StrokeThickness = StrokeThickness.MEDIUM
+)
 
 data class PdfPage(
     val bitmap: Bitmap,
@@ -156,6 +173,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var nextStrokeId = 0
     private val _completedInkStrokes = MutableStateFlow<Map<Int, List<InkStroke>>>(emptyMap())
     val completedInkStrokes: StateFlow<Map<Int, List<InkStroke>>> = _completedInkStrokes.asStateFlow()
+
+    private val _penColor = MutableStateFlow(StrokeColor.BLACK)
+    val penColor: StateFlow<StrokeColor> = _penColor.asStateFlow()
+
+    private val _penThickness = MutableStateFlow(StrokeThickness.MEDIUM)
+    val penThickness: StateFlow<StrokeThickness> = _penThickness.asStateFlow()
+
+    fun setPenColor(color: StrokeColor) { _penColor.value = color }
+    fun setPenThickness(t: StrokeThickness) { _penThickness.value = t }
 
     private var pfd: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
@@ -319,11 +345,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun addInkAnnotation(pageIndex: Int, points: List<Offset>, displayWidth: Int, displayHeight: Int) {
+    fun addInkAnnotation(
+        pageIndex: Int, points: List<Offset>, displayWidth: Int, displayHeight: Int,
+        color: StrokeColor = _penColor.value,
+        thickness: StrokeThickness = _penThickness.value
+    ) {
         val normalized = points.map { Offset(it.x / displayWidth, it.y / displayHeight) }
         val strokeId = nextStrokeId++
         _completedInkStrokes.update { map ->
-            map + (pageIndex to (map[pageIndex].orEmpty() + InkStroke(strokeId, normalized)))
+            map + (pageIndex to (map[pageIndex].orEmpty() + InkStroke(strokeId, normalized, color, thickness)))
         }
         viewModelScope.launch(Dispatchers.IO) {
             val uri = docUri ?: return@launch
@@ -353,7 +383,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     listOf(minX, minY, maxX, maxY).forEach { add(COSFloat(it)) }
                 }
                 val colorArr = COSArray().apply {
-                    listOf(0f, 0f, 0f).forEach { add(COSFloat(it)) }
+                    color.pdfRgb.forEach { add(COSFloat(it)) }
+                }
+                val bsDict = COSDictionary().apply {
+                    setName(COSName.TYPE, "Border")
+                    setName(COSName.SUBTYPE, "S")
+                    setItem(COSName.getPDFName("W"), COSFloat(thickness.multiplier * 1.5f))
                 }
                 val annDict = COSDictionary().apply {
                     setName(COSName.TYPE, "Annot")
@@ -361,6 +396,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     setItem(COSName.INKLIST, outerList)
                     setItem(COSName.RECT, rectArr)
                     setItem(COSName.getPDFName("C"), colorArr)
+                    setItem(COSName.getPDFName("BS"), bsDict)
                     setString(COSName.NM, "ink-$strokeId")
                 }
                 pdPage.annotations.add(PDAnnotationUnknown(annDict))
@@ -514,7 +550,25 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         points.add(Offset(x / pageW, 1f - y / pageH))
                         j += 2
                     }
-                    if (points.isNotEmpty()) result.add(InkStroke(id, points))
+                    val cosObj = ann.getCOSObject()
+
+                    val cArr = cosObj.getDictionaryObject(COSName.getPDFName("C")) as? COSArray
+                    val strokeColor = if (cArr != null && cArr.size() >= 3) {
+                        val r = (cArr.getObject(0) as? COSNumber)?.floatValue() ?: 0f
+                        val g = (cArr.getObject(1) as? COSNumber)?.floatValue() ?: 0f
+                        val b = (cArr.getObject(2) as? COSNumber)?.floatValue() ?: 0f
+                        StrokeColor.entries.minByOrNull { c ->
+                            val dr = c.pdfRgb[0]-r; val dg = c.pdfRgb[1]-g; val db = c.pdfRgb[2]-b
+                            dr*dr + dg*dg + db*db
+                        } ?: StrokeColor.BLACK
+                    } else StrokeColor.BLACK
+
+                    val bsDict2 = cosObj.getDictionaryObject(COSName.getPDFName("BS")) as? COSDictionary
+                    val w = (bsDict2?.getDictionaryObject(COSName.getPDFName("W")) as? COSNumber)?.floatValue() ?: 1.5f
+                    val strokeThickness = StrokeThickness.entries.minByOrNull { kotlin.math.abs(it.multiplier * 1.5f - w) }
+                        ?: StrokeThickness.MEDIUM
+
+                    if (points.isNotEmpty()) result.add(InkStroke(id, points, strokeColor, strokeThickness))
                 }
             }
             result

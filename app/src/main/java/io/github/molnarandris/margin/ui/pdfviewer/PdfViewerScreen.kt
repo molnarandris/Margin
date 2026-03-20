@@ -6,6 +6,12 @@ import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -39,8 +45,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -66,6 +74,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -113,6 +122,8 @@ fun PdfViewerScreen(
     val uiState by viewModel.uiState.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
     val completedInkStrokes by viewModel.completedInkStrokes.collectAsState()
+    val penColor by viewModel.penColor.collectAsState()
+    val penThickness by viewModel.penThickness.collectAsState()
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -190,7 +201,8 @@ fun PdfViewerScreen(
     }
 
     Scaffold(
-        topBar = { if (barsVisible) TopAppBar(
+        topBar = { if (barsVisible) Column {
+            TopAppBar(
                 title = {
                     if (isSearchVisible) {
                         OutlinedTextField(
@@ -262,7 +274,13 @@ fun PdfViewerScreen(
                     }
                 }
             )
-        }
+            PenToolbar(
+                selectedColor = penColor,
+                selectedThickness = penThickness,
+                onColorSelected = { viewModel.setPenColor(it) },
+                onThicknessSelected = { viewModel.setPenThickness(it) }
+            )
+        } },
     ) { innerPadding ->
         when (val state = uiState) {
             is PdfViewerUiState.Loading -> {
@@ -691,20 +709,22 @@ fun PdfViewerScreen(
                                     val pageStrokes = completedInkStrokes[index]
                                     if (!pageStrokes.isNullOrEmpty()) {
                                         Canvas(modifier = Modifier.matchParentSize()) {
-                                            val strokePx = size.width / page.nativeWidth
+                                            val baseStrokePx = size.width / page.nativeWidth
                                             for (stroke in pageStrokes) {
                                                 val pts = stroke.points
                                                 if (pts.size < 2) continue
+                                                val c = stroke.color.composeColor
+                                                val w = baseStrokePx * stroke.thickness.multiplier
                                                 val x0 = pts.first().x * size.width
                                                 val y0 = pts.first().y * size.height
                                                 if (pts.first() == pts.last()) {
-                                                    drawCircle(Color.Black, radius = strokePx / 2f, center = Offset(x0, y0))
+                                                    drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
                                                 } else {
                                                     val path = Path().apply {
                                                         moveTo(x0, y0)
                                                         pts.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
                                                     }
-                                                    drawPath(path, color = Color.Black, style = Stroke(width = strokePx))
+                                                    drawPath(path, color = c, style = Stroke(width = w))
                                                 }
                                             }
                                         }
@@ -714,15 +734,17 @@ fun PdfViewerScreen(
                                     val inkStroke = currentInkStroke
                                     if (inkStroke != null && inkStroke.size >= 2) {
                                         Canvas(modifier = Modifier.matchParentSize()) {
-                                            val strokePx = size.width / page.nativeWidth
+                                            val baseStrokePx = size.width / page.nativeWidth
+                                            val c = penColor.composeColor
+                                            val w = baseStrokePx * penThickness.multiplier
                                             if (inkStroke.first() == inkStroke.last()) {
-                                                drawCircle(Color.Black, radius = strokePx / 2f, center = inkStroke.first())
+                                                drawCircle(c, radius = w / 2f, center = inkStroke.first())
                                             } else {
                                                 val path = Path().apply {
                                                     moveTo(inkStroke.first().x, inkStroke.first().y)
                                                     inkStroke.drop(1).forEach { lineTo(it.x, it.y) }
                                                 }
-                                                drawPath(path, color = Color.Black, style = Stroke(width = strokePx))
+                                                drawPath(path, color = c, style = Stroke(width = w))
                                             }
                                         }
                                     }
@@ -877,6 +899,65 @@ fun PdfViewerScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PenToolbar(
+    selectedColor: StrokeColor, selectedThickness: StrokeThickness,
+    onColorSelected: (StrokeColor) -> Unit, onThicknessSelected: (StrokeThickness) -> Unit
+) {
+    Surface(tonalElevation = 3.dp, shadowElevation = 8.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                StrokeThickness.entries.forEach { t ->
+                    ThicknessButton(t, t == selectedThickness, selectedColor) { onThicknessSelected(t) }
+                }
+            }
+            Box(Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                StrokeColor.entries.forEach { c ->
+                    ColorButton(c, c == selectedColor) { onColorSelected(c) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThicknessButton(thickness: StrokeThickness, isSelected: Boolean, currentColor: StrokeColor, onClick: () -> Unit) {
+    val dotSize = when (thickness) {
+        StrokeThickness.THIN -> 8.dp
+        StrokeThickness.MEDIUM -> 14.dp
+        StrokeThickness.THICK -> 22.dp
+    }
+    Box(
+        modifier = Modifier.size(40.dp).clip(CircleShape)
+            .then(if (isSelected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CircleShape) else Modifier)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.size(dotSize).clip(CircleShape).background(currentColor.composeColor))
+    }
+}
+
+@Composable
+private fun ColorButton(color: StrokeColor, isSelected: Boolean, onClick: () -> Unit) {
+    val ringColor = if (color == StrokeColor.BLACK) MaterialTheme.colorScheme.outline else color.composeColor
+    Box(
+        modifier = Modifier.size(40.dp).clip(CircleShape)
+            .then(if (isSelected) Modifier.border(2.dp, ringColor, CircleShape) else Modifier)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier.size(24.dp).clip(CircleShape).background(color.composeColor)
+                .then(if (color == StrokeColor.BLACK) Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape) else Modifier)
+        )
     }
 }
 
