@@ -140,18 +140,14 @@ fun PdfViewerScreen(
     var titleEditText  by remember { mutableStateOf("") }
     var authorEditText by remember { mutableStateOf("") }
 
-    var barsVisible by remember { mutableStateOf(true) }
+    var topBarVisible by remember { mutableStateOf(true) }
     val view = LocalView.current
-    LaunchedEffect(barsVisible) {
+    LaunchedEffect(Unit) {
         val window = (view.context as Activity).window
         val controller = WindowInsetsControllerCompat(window, view)
-        if (barsVisible) {
-            controller.show(WindowInsetsCompat.Type.systemBars())
-        } else {
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
     DisposableEffect(Unit) {
         val gestureZonePx = (32 * view.resources.displayMetrics.density).toInt()
@@ -215,7 +211,7 @@ fun PdfViewerScreen(
     }
 
     Scaffold(
-        topBar = { if (barsVisible) Column {
+        topBar = { if (topBarVisible) Column {
             TopAppBar(
                 title = {
                     if (isSearchVisible) {
@@ -405,7 +401,7 @@ fun PdfViewerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .let { if (barsVisible) it.padding(innerPadding) else it }
+                        .let { if (topBarVisible) it.padding(innerPadding) else it }
                         .background(Color(0xFFE0E0E0))
                         .onSizeChanged { viewportHeightPx = it.height.toFloat() }
                         .pointerInput(screenWidthPx, marginPx) {
@@ -561,7 +557,7 @@ fun PdfViewerScreen(
                                 popupHeightPx = popupHeightPx,
                                 density = density,
                                 currentSelectionRef = currentSelectionRef,
-                                onBarsVisibleToggle = { barsVisible = !barsVisible },
+                                onBarsVisibleToggle = { topBarVisible = !topBarVisible },
                                 onTextSelectionChanged = { textSelection = it },
                                 onDragCharsChanged = { dragChars = it },
                                 onIsDraggingHandleChanged = { isDraggingHandle = it },
