@@ -410,10 +410,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val maxX = coords.filterIndexed { i, _ -> i % 2 == 0 }.max()
                 val maxY = coords.filterIndexed { i, _ -> i % 2 != 0 }.max()
 
+                val strokeWidth = thickness.multiplier * 1.5f
+                val pad = strokeWidth * 0.7f
+
                 val innerList = COSArray().apply { coords.forEach { add(COSFloat(it)) } }
                 val outerList = COSArray().apply { add(innerList) }
                 val rectArr = COSArray().apply {
-                    listOf(minX, minY, maxX, maxY).forEach { add(COSFloat(it)) }
+                    listOf(minX - pad, minY - pad, maxX + pad, maxY + pad).forEach { add(COSFloat(it)) }
                 }
                 val colorArr = COSArray().apply {
                     color.pdfRgb.forEach { add(COSFloat(it)) }
