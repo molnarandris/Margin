@@ -513,7 +513,7 @@ fun PdfViewerScreen(
                                 } while (event.changes.any { it.pressed })
                                 // After gesture ends: if horizontal swipe at scale<=1, change page instantly
                                 if (singleTouchAxis == 1 && scale <= 1f) {
-                                    val threshold = screenWidthPx * 0.2f
+                                    val threshold = with(density) { 60.dp.toPx() }
                                     fun maxOffsetYForPage(pg: PdfPage): Float {
                                         val pageH = (screenWidthPx * scale - 2 * marginPx) * pg.nativeHeight / pg.nativeWidth
                                         return ((pageH - viewportHeightPx) / 2f).coerceAtLeast(0f)
