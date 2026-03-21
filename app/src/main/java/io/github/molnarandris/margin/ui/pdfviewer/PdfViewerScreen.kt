@@ -69,6 +69,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
@@ -831,28 +832,46 @@ private fun PageContent(
                 if (sel.existingHighlight == null) {
                     val firstChar = displayedChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left }))
                     val lastChar  = displayedChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right }))
+                    val handleColor = Color(0xFF1565C0.toInt())
+                    val handleR = 10.dp.toPx()
+                    fun drawTeardrop(cx: Float, cy: Float) {
+                        val bodyY = cy + handleR * 1.5f
+                        val path = Path()
+                        path.moveTo(cx, cy)
+                        path.cubicTo(cx + handleR * 0.4f, cy + handleR * 0.3f,
+                                     cx + handleR,         bodyY - handleR * 0.5f,
+                                     cx + handleR,         bodyY)
+                        path.arcTo(Rect(cx - handleR, bodyY - handleR, cx + handleR, bodyY + handleR),
+                            startAngleDegrees = 0f, sweepAngleDegrees = 180f, forceMoveTo = false)
+                        path.cubicTo(cx - handleR,         bodyY - handleR * 0.5f,
+                                     cx - handleR * 0.4f, cy + handleR * 0.3f,
+                                     cx,                   cy)
+                        path.close()
+                        drawPath(path, handleColor)
+                    }
                     firstChar?.let {
-                        drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
-                            center = Offset(it.bounds.left  / page.nativeWidth  * size.width,
-                                            it.bounds.top / page.nativeHeight * size.height))
+                        drawTeardrop(
+                            it.bounds.left   / page.nativeWidth  * size.width,
+                            it.bounds.bottom / page.nativeHeight * size.height)
                     }
                     lastChar?.let {
-                        drawCircle(Color(0xFF1565C0.toInt()), radius = 10.dp.toPx(),
-                            center = Offset(it.bounds.right  / page.nativeWidth  * size.width,
-                                            it.bounds.top / page.nativeHeight * size.height))
+                        drawTeardrop(
+                            it.bounds.right  / page.nativeWidth  * size.width,
+                            it.bounds.bottom / page.nativeHeight * size.height)
                     }
                 }
             }
             Box(modifier = Modifier.matchParentSize().pointerInput(sel) {
                 val touchThreshPx = 32.dp.toPx()
+                val handleOffsetY = 10.dp.toPx() * 1.5f  // body centre offset below tip
                 awaitEachGesture {
                     val currentChars = dragChars ?: sel.selectedChars
                     val firstChar = currentChars.minWithOrNull(compareBy({ it.bounds.top }, { it.bounds.left })) ?: return@awaitEachGesture
                     val lastChar  = currentChars.maxWithOrNull(compareBy({ it.bounds.bottom }, { it.bounds.right })) ?: return@awaitEachGesture
-                    val startX = firstChar.bounds.left  / page.nativeWidth  * pageSize.width.toFloat()
-                    val startY = firstChar.bounds.top   / page.nativeHeight * pageSize.height.toFloat()
-                    val endX   = lastChar.bounds.right  / page.nativeWidth  * pageSize.width.toFloat()
-                    val endY   = lastChar.bounds.top    / page.nativeHeight * pageSize.height.toFloat()
+                    val startX = firstChar.bounds.left   / page.nativeWidth  * pageSize.width.toFloat()
+                    val startY = firstChar.bounds.bottom / page.nativeHeight * pageSize.height.toFloat() + handleOffsetY
+                    val endX   = lastChar.bounds.right   / page.nativeWidth  * pageSize.width.toFloat()
+                    val endY   = lastChar.bounds.bottom  / page.nativeHeight * pageSize.height.toFloat() + handleOffsetY
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
                     val distStart = (downPos - Offset(startX, startY)).getDistance()
@@ -864,6 +883,14 @@ private fun PageContent(
                         return@awaitEachGesture
                     }
                     val draggingStart = hitStart && (!hitEnd || distStart <= distEnd)
+                    // Anchor: map the actual touch-down position to the grabbed character's PDF-space
+                    // centre. This way dragging from any point on the handle (tip, body, bottom)
+                    // tracks relative to where the finger landed, never jumping to the wrong row.
+                    val dragAnchorScreenY = downPos.y
+                    val dragAnchorPdfY = if (draggingStart)
+                        (firstChar.bounds.top + firstChar.bounds.bottom) / 2f
+                    else
+                        (lastChar.bounds.top  + lastChar.bounds.bottom)  / 2f
                     down.consume()
                     var lastDragChars: List<TextChar>? = null
                     onIsDraggingHandleChanged(true)
@@ -872,8 +899,8 @@ private fun PageContent(
                             val event = awaitPointerEvent()
                             event.changes.forEach { it.consume() }
                             val pos = event.changes.firstOrNull()?.position ?: continue
-                            val prX = pos.x / pageSize.width.toFloat()  * page.nativeWidth
-                            val prY = pos.y / pageSize.height.toFloat() * page.nativeHeight
+                            val prX = pos.x / pageSize.width.toFloat() * page.nativeWidth
+                            val prY = (pos.y - dragAnchorScreenY) / pageSize.height.toFloat() * page.nativeHeight + dragAnchorPdfY
                             val allChars = page.words.flatMap { it.chars }
                             val nearest = allChars.minByOrNull { c ->
                                 val cx = (c.bounds.left + c.bounds.right) / 2f
