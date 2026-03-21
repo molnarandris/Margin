@@ -64,6 +64,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalView
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.Alignment
@@ -143,18 +144,26 @@ fun PdfViewerScreen(
 
     var topBarVisible by remember { mutableStateOf(true) }
     val view = LocalView.current
-    LaunchedEffect(Unit) {
+    DisposableEffect(Unit) {
         val window = (view.context as Activity).window
         val controller = WindowInsetsControllerCompat(window, view)
         controller.hide(WindowInsetsCompat.Type.systemBars())
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+            if (insets.isVisible(WindowInsetsCompat.Type.systemBars())) {
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            }
+            ViewCompat.onApplyWindowInsets(v, insets)
+        }
+        onDispose {
+            ViewCompat.setOnApplyWindowInsetsListener(view, null)
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
     }
+    val gestureZonePx = remember { 32 * view.resources.displayMetrics.density }
     DisposableEffect(Unit) {
-        val gestureZonePx = (32 * view.resources.displayMetrics.density).toInt()
         val listener = android.view.View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
             v.systemGestureExclusionRects = listOf(
-                android.graphics.Rect(v.width - gestureZonePx, 0, v.width, v.height)
+                android.graphics.Rect(v.width - gestureZonePx.toInt(), 0, v.width, v.height)
             )
         }
         view.addOnLayoutChangeListener(listener)
@@ -407,7 +416,8 @@ fun PdfViewerScreen(
                         .onSizeChanged { viewportHeightPx = it.height.toFloat() }
                         .pointerInput(screenWidthPx, marginPx) {
                             awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false)
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                val startedFromLeftEdge = down.position.x < gestureZonePx
                                 var wasMultiTouch = false
                                 var everMultiTouch = false
                                 var singleTouchAxis = 0
@@ -499,7 +509,7 @@ fun PdfViewerScreen(
                                                     change.consume()
                                                 }
                                             }
-                                            if (singleTouchAxis == 1 && scale <= 1f) {
+                                            if (singleTouchAxis == 1 && scale <= 1f && !startedFromLeftEdge) {
                                                 totalDx += dx
                                                 change.consume()
                                             }
@@ -509,7 +519,7 @@ fun PdfViewerScreen(
                                     }
                                 } while (event.changes.any { it.pressed })
                                 // After gesture ends: if horizontal swipe at scale<=1, change page instantly
-                                if (singleTouchAxis == 1 && scale <= 1f) {
+                                if (singleTouchAxis == 1 && scale <= 1f && !startedFromLeftEdge) {
                                     val threshold = with(density) { 60.dp.toPx() }
                                     fun maxOffsetYForPage(pg: PdfPage): Float {
                                         val pageH = (screenWidthPx * scale - 2 * marginPx) * pg.nativeHeight / pg.nativeWidth
