@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.WindowInsets
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -50,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -190,8 +192,16 @@ fun PdfViewerScreen(
     }
 
     Scaffold(
+        containerColor = Color(0xFFE0E0E0),
         topBar = { if (topBarVisible) Column {
+            val density = LocalDensity.current
+            val defaultInsets = TopAppBarDefaults.windowInsets
+            val reducedInsets = WindowInsets(
+                top = (defaultInsets.getTop(density) - with(density) { 8.dp.roundToPx() }).coerceAtLeast(0)
+            )
             TopAppBar(
+                expandedHeight = 56.dp,
+                windowInsets = reducedInsets,
                 title = {
                     if (isSearchVisible) {
                         OutlinedTextField(
