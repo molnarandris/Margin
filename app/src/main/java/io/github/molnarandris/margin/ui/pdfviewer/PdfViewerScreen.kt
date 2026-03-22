@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -84,7 +85,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -152,6 +156,8 @@ fun PdfViewerScreen(
     var isEditDialogVisible by remember { mutableStateOf(false) }
     var titleEditText  by remember { mutableStateOf("") }
     var authorEditText by remember { mutableStateOf("") }
+    var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
+    var noteDialogText   by remember { mutableStateOf("") }
     var currentPage by remember { mutableStateOf(0) }
 
     var topBarVisible by remember { mutableStateOf(true) }
@@ -211,6 +217,31 @@ fun PdfViewerScreen(
         )
     }
 
+    val noteTarget = noteDialogTarget
+    if (noteTarget != null) {
+        AlertDialog(
+            onDismissRequest = { noteDialogTarget = null },
+            title = { Text("Annotation") },
+            text = {
+                OutlinedTextField(
+                    value = noteDialogText,
+                    onValueChange = { noteDialogText = it },
+                    label = { Text("Note") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setHighlightNote(noteTarget, noteDialogText)
+                    noteDialogTarget = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { noteDialogTarget = null }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (isOutlineVisible) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         val visibleItems = remember(outline, collapsed) {
@@ -256,12 +287,11 @@ fun PdfViewerScreen(
                                     }
                             )
                         }
-                        Text(
-                            text = item.title,
-                            modifier = Modifier.weight(1f),
+                        DotLeaderOutlineText(
+                            title = item.title,
+                            pageNum = item.pageIndex + 1,
                             fontWeight = if (item.level == 0) FontWeight.Bold else null,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
@@ -644,6 +674,14 @@ fun PdfViewerScreen(
                                 onPopupHeightPxChanged = { popupHeightPx = it },
                                 onAddHighlight = { viewModel.addHighlight(it.pageIndex, it.selectedChars) },
                                 onDeleteHighlight = { viewModel.deleteHighlight(it) },
+                                onAnnotateHighlight = { h ->
+                                    noteDialogTarget = h
+                                    noteDialogText = h.note ?: ""
+                                },
+                                onTapAnnotatedHighlight = { h ->
+                                    noteDialogTarget = h
+                                    noteDialogText = h.note ?: ""
+                                },
                                 onCopy = { clipboardManager.setText(AnnotatedString(it)) },
                                 onEraseInkStrokes = { pageIdx, ids -> viewModel.eraseInkStrokes(pageIdx, ids) },
                                 onAddInkAnnotation = { pageIdx, stroke, w, h -> viewModel.addInkAnnotation(pageIdx, stroke, w, h) },
@@ -704,6 +742,8 @@ private fun PageContent(
     onPopupHeightPxChanged: (Int) -> Unit,
     onAddHighlight: (PageTextSelection) -> Unit,
     onDeleteHighlight: (PdfHighlight) -> Unit,
+    onAnnotateHighlight: (PdfHighlight) -> Unit,
+    onTapAnnotatedHighlight: (PdfHighlight) -> Unit,
     onCopy: (String) -> Unit,
     onEraseInkStrokes: (Int, List<Int>) -> Unit,
     onAddInkAnnotation: (Int, List<Offset>, Int, Int) -> Unit,
@@ -772,6 +812,16 @@ private fun PageContent(
                             val hit = page.links.firstOrNull { link ->
                                 link.bounds.any { rect -> rect.contains(pdfX, pdfY) }
                             }
+                            val annotatedHit = page.highlights.firstOrNull { h ->
+                                h.note != null && h.bounds.any { r ->
+                                    r.left <= pdfX && pdfX <= r.right &&
+                                    r.top <= pdfY && pdfY <= r.bottom + r.height() * 0.3f
+                                }
+                            }
+                            if (annotatedHit != null) {
+                                onTapAnnotatedHighlight(annotatedHit)
+                                return@detectTapGestures
+                            }
                             when (val target = hit?.target) {
                                 is LinkTarget.Url -> onLinkTap(target, hit.bounds.first())
                                 is LinkTarget.Goto -> onLinkTap(target, hit.bounds.first())
@@ -823,6 +873,13 @@ private fun PageContent(
                         val b = r.bottom / page.nativeHeight * size.height
                         drawRect(Color(0xFFFFF176), Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
                     }
+                }
+                page.highlights.forEach { h ->
+                    if (h.note == null) return@forEach
+                    val firstBound = h.bounds.firstOrNull() ?: return@forEach
+                    val cx = firstBound.right / page.nativeWidth  * size.width
+                    val cy = firstBound.top   / page.nativeHeight * size.height
+                    drawCircle(Color(0xFFFF9800), radius = 5.dp.toPx(), center = Offset(cx, cy))
                 }
             }
         }
@@ -1071,6 +1128,11 @@ private fun PageContent(
                                         }
                                     }
                                 }
+                                if (sel.existingHighlight != null) {
+                                    IconButton(onClick = { onAnnotateHighlight(sel.existingHighlight) }) {
+                                        Icon(Icons.AutoMirrored.Filled.StickyNote2, contentDescription = "Add note")
+                                    }
+                                }
                                 IconButton(onClick = {
                                     val selectedSet = sel.selectedChars.toHashSet()
                                     val text = page.words
@@ -1272,4 +1334,52 @@ private fun strokeNearScribble(
         for (j in 0 until strokePx.size - 1)
             if (pointToSegmentDist(pt, strokePx[j], strokePx[j + 1]) <= thresholdPx) return true
     return false
+}
+
+@Composable
+private fun DotLeaderOutlineText(
+    title: String,
+    pageNum: Int,
+    modifier: Modifier = Modifier,
+    fontWeight: FontWeight? = null,
+) {
+    val dotColor = Color.Gray.copy(alpha = 0.45f)
+    SubcomposeLayout(modifier) { constraints ->
+        val pageNumPlaceable = subcompose("pageNum") {
+            Text(text = "$pageNum", color = Color.Gray, fontSize = 12.sp)
+        }[0].measure(Constraints())
+
+        val minDotGap = 20
+        val maxTitleWidth = (constraints.maxWidth - pageNumPlaceable.width - minDotGap).coerceAtLeast(0)
+        val titlePlaceable = subcompose("title") {
+            Text(text = title, fontWeight = fontWeight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }[0].measure(Constraints(maxWidth = maxTitleWidth))
+
+        val height = maxOf(titlePlaceable.height, pageNumPlaceable.height)
+        val dotsStart = titlePlaceable.width
+        val dotsEnd = constraints.maxWidth - pageNumPlaceable.width
+        val dotsWidth = (dotsEnd - dotsStart).coerceAtLeast(0)
+
+        val dotsPlaceable = subcompose("dots") {
+            Canvas(Modifier.fillMaxSize()) {
+                val y = size.height * 0.78f
+                drawLine(
+                    color = dotColor,
+                    start = Offset(4.dp.toPx(), y),
+                    end = Offset(size.width - 4.dp.toPx(), y),
+                    strokeWidth = 1.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(1.dp.toPx(), 4.dp.toPx()), 0f)
+                )
+            }
+        }[0].measure(Constraints.fixed(dotsWidth, height))
+
+        layout(constraints.maxWidth, height) {
+            titlePlaceable.placeRelative(0, (height - titlePlaceable.height) / 2)
+            dotsPlaceable.placeRelative(dotsStart, 0)
+            pageNumPlaceable.placeRelative(
+                constraints.maxWidth - pageNumPlaceable.width,
+                (height - pageNumPlaceable.height) / 2
+            )
+        }
+    }
 }

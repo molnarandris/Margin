@@ -60,7 +60,8 @@ data class TextWord(
 data class PdfHighlight(
     val pageIndex: Int,
     val bounds: List<RectF>,    // PR space; one rect per line
-    val annotationIndex: Int    // index in PDPage.annotations list
+    val annotationIndex: Int,   // index in PDPage.annotations list
+    val note: String? = null    // PDF Contents field; null = no annotation
 )
 
 data class SearchMatch(
@@ -573,6 +574,29 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun setHighlightNote(highlight: PdfHighlight, note: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val ann = pdDoc.getPage(highlight.pageIndex)
+                    .annotations.getOrNull(highlight.annotationIndex)
+                if (ann != null) {
+                    if (note.isBlank()) ann.getCOSObject().removeItem(COSName.CONTENTS)
+                    else ann.contents = note
+                }
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.close()
+
+                reloadPage(uri, app, highlight.pageIndex)
+            }
+        }
+    }
+
     private fun groupCharsIntoLines(chars: List<TextChar>): List<List<TextChar>> {
         if (chars.isEmpty()) return emptyList()
         val threshold = chars.map { it.bounds.height() }.average().toFloat() * 0.5f
@@ -711,7 +735,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         val pbBot = minOf(q[1], q[3], q[5], q[7])
                         RectF(minX, pageHeight - pbTop, maxX, pageHeight - pbBot)
                     }
-                    PdfHighlight(pageIndex, rects, realIdx)
+                    val note = ann.contents?.takeIf { it.isNotBlank() }
+                    PdfHighlight(pageIndex, rects, realIdx, note)
                 }
         } catch (e: Exception) {
             emptyList()
