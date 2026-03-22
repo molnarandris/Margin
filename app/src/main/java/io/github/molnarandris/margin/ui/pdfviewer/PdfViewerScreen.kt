@@ -130,6 +130,7 @@ fun PdfViewerScreen(
     val completedInkStrokes by viewModel.completedInkStrokes.collectAsState()
     val penColor by viewModel.penColor.collectAsState()
     val penThickness by viewModel.penThickness.collectAsState()
+    val pendingScrollToPage by viewModel.pendingScrollToPage.collectAsState()
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -154,6 +155,14 @@ fun PdfViewerScreen(
         if (isSearchVisible) {
             searchFocusRequester.requestFocus()
             keyboardController?.show()
+        }
+    }
+
+    LaunchedEffect(pendingScrollToPage, uiState) {
+        val target = pendingScrollToPage
+        if (target >= 0 && uiState is PdfViewerUiState.Ready) {
+            currentPage = target.coerceAtMost((uiState as PdfViewerUiState.Ready).pages.size - 1)
+            viewModel.clearPendingScroll()
         }
     }
 
@@ -283,7 +292,9 @@ fun PdfViewerScreen(
                 selectedColor = penColor,
                 selectedThickness = penThickness,
                 onColorSelected = { viewModel.setPenColor(it) },
-                onThicknessSelected = { viewModel.setPenThickness(it) }
+                onThicknessSelected = { viewModel.setPenThickness(it) },
+                onInsertBefore = { viewModel.insertPage(currentPage) },
+                onInsertAfter = { viewModel.insertPage(currentPage + 1) }
             )
         } },
     ) { innerPadding ->
@@ -1010,7 +1021,8 @@ private fun PageContent(
 @Composable
 private fun PenToolbar(
     selectedColor: StrokeColor, selectedThickness: StrokeThickness,
-    onColorSelected: (StrokeColor) -> Unit, onThicknessSelected: (StrokeThickness) -> Unit
+    onColorSelected: (StrokeColor) -> Unit, onThicknessSelected: (StrokeThickness) -> Unit,
+    onInsertBefore: () -> Unit, onInsertAfter: () -> Unit
 ) {
     Surface(tonalElevation = 0.dp, shadowElevation = 4.dp) {
         Row(
@@ -1029,6 +1041,60 @@ private fun PenToolbar(
                     ColorButton(c, c == selectedColor) { onColorSelected(c) }
                 }
             }
+            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            InsertPageButton(before = false, onClick = onInsertBefore)
+            InsertPageButton(before = true, onClick = onInsertAfter)
+        }
+    }
+}
+
+@Composable
+private fun InsertPageButton(before: Boolean, onClick: () -> Unit) {
+    val color = MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier.size(width = 36.dp, height = 32.dp).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(width = 34.dp, height = 26.dp)) {
+            val lineH = size.height
+            val rectW = size.width * 0.48f
+            val rectH = size.height
+            val gap = size.width * 0.08f
+            val lineX: Float
+            val rectLeft: Float
+            if (before) {
+                lineX = 0f
+                rectLeft = gap + 2f
+            } else {
+                rectLeft = 0f
+                lineX = rectLeft + rectW + gap + 2f
+            }
+            // Vertical line
+            drawLine(
+                color = color,
+                start = Offset(lineX, 0f),
+                end = Offset(lineX, lineH),
+                strokeWidth = 2.dp.toPx()
+            )
+            // Rectangle outline
+            drawRect(
+                color = color,
+                topLeft = Offset(rectLeft, 0f),
+                size = Size(rectW, rectH),
+                style = Stroke(width = 1.5.dp.toPx())
+            )
+            // Plus sign
+            val cx = rectLeft + rectW / 2f
+            val cy = rectH / 2f
+            val arm = rectW * 0.25f
+            drawLine(color = color,
+                start = Offset(cx - arm, cy),
+                end = Offset(cx + arm, cy),
+                strokeWidth = 1.5.dp.toPx())
+            drawLine(color = color,
+                start = Offset(cx, cy - arm),
+                end = Offset(cx, cy + arm),
+                strokeWidth = 1.5.dp.toPx())
         }
     }
 }

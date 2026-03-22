@@ -17,6 +17,7 @@ import com.tom_roush.pdfbox.cos.COSFloat
 import com.tom_roush.pdfbox.cos.COSNumber
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
@@ -191,13 +192,22 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var rerenderJob: Job? = null
     private var currentRenderScale = 2f
     private var docUri: Uri? = null
+    private var loadedDirUri: Uri? = null
+    private var loadedDocId: String? = null
+    private var loadedFileName: String = ""
     var firstVisiblePageIndex: Int = 0
+
+    private val _pendingScrollToPage = MutableStateFlow(-1)
+    val pendingScrollToPage: StateFlow<Int> = _pendingScrollToPage.asStateFlow()
+    fun clearPendingScroll() { _pendingScrollToPage.value = -1 }
 
     fun onVisiblePageChanged(index: Int) {
         firstVisiblePageIndex = index
     }
 
     fun loadPdf(dirUri: Uri, docId: String) {
+        loadedDirUri = dirUri
+        loadedDocId = docId
         rerenderJob?.cancel()
         viewModelScope.launch {
             _uiState.value = PdfViewerUiState.Loading
@@ -209,7 +219,38 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         if (cursor.moveToFirst()) cursor.getString(0).removeSuffix(".pdf") else ""
                     } ?: ""
             }
+            loadedFileName = fileName
             renderPages(dirUri, docId, fileName)
+        }
+    }
+
+    fun insertPage(insertBeforeIndex: Int) {
+        val dirUri = loadedDirUri ?: return
+        val docId = loadedDocId ?: return
+        rerenderJob?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
+                val newPage = PDPage(mediaBox)
+                if (insertBeforeIndex >= pdDoc.numberOfPages) {
+                    pdDoc.addPage(newPage)
+                } else {
+                    pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
+                }
+                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.close()
+            }
+            withContext(Dispatchers.Main) {
+                _pendingScrollToPage.value = insertBeforeIndex
+                _uiState.value = PdfViewerUiState.Loading
+            }
+            renderPages(dirUri, docId, loadedFileName)
         }
     }
 
