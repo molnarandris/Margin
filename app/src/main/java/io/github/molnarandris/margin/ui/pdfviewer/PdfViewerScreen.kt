@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -31,12 +32,18 @@ import androidx.compose.foundation.layout.WindowInsets
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -90,6 +97,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -131,6 +139,9 @@ fun PdfViewerScreen(
     val penColor by viewModel.penColor.collectAsState()
     val penThickness by viewModel.penThickness.collectAsState()
     val pendingScrollToPage by viewModel.pendingScrollToPage.collectAsState()
+    val outline by viewModel.outline.collectAsState()
+    var isOutlineVisible by remember { mutableStateOf(false) }
+    var collapsed by remember { mutableStateOf(emptySet<Int>()) }
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -198,6 +209,64 @@ fun PdfViewerScreen(
                 TextButton(onClick = { isEditDialogVisible = false }) { Text("Cancel") }
             }
         )
+    }
+
+    if (isOutlineVisible) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val visibleItems = remember(outline, collapsed) {
+            buildList {
+                var collapseAtLevel = -1
+                outline.forEachIndexed { i, item ->
+                    if (collapseAtLevel >= 0 && item.level > collapseAtLevel) return@forEachIndexed
+                    collapseAtLevel = -1
+                    add(i to item)
+                    if (item.hasChildren && i in collapsed) collapseAtLevel = item.level
+                }
+            }
+        }
+        ModalBottomSheet(
+            onDismissRequest = { isOutlineVisible = false },
+            sheetState = sheetState
+        ) {
+            LazyColumn(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
+                items(visibleItems, key = { it.first }) { (index, item) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateItem()
+                            .clickable { currentPage = item.pageIndex; isOutlineVisible = false }
+                            .padding(
+                                start = (16 + item.level * 24).dp,
+                                end = 8.dp, top = 12.dp, bottom = 12.dp
+                            ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (item.hasChildren) {
+                            Icon(
+                                imageVector = if (index in collapsed)
+                                    Icons.AutoMirrored.Filled.KeyboardArrowRight
+                                else
+                                    Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (index in collapsed) "Expand" else "Collapse",
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clickable {
+                                        collapsed = if (index in collapsed)
+                                            collapsed - index else collapsed + index
+                                    }
+                            )
+                        }
+                        Text(
+                            text = item.title,
+                            modifier = Modifier.weight(1f),
+                            fontWeight = if (item.level == 0) FontWeight.Bold else null,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
     }
 
     Scaffold(
@@ -284,6 +353,11 @@ fun PdfViewerScreen(
                     } else {
                         IconButton(onClick = { isSearchVisible = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
+                        }
+                        if (outline.isNotEmpty()) {
+                            IconButton(onClick = { isOutlineVisible = true }) {
+                                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
+                            }
                         }
                     }
                 }

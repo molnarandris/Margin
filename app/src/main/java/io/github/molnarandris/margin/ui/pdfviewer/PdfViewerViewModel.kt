@@ -18,6 +18,8 @@ import com.tom_roush.pdfbox.cos.COSNumber
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
@@ -70,6 +72,8 @@ data class SearchState(
     val matches: List<SearchMatch> = emptyList(),
     val currentIndex: Int = -1    // -1 = no results
 )
+
+data class OutlineItem(val title: String, val pageIndex: Int, val level: Int, val hasChildren: Boolean = false)
 
 enum class StrokeColor(val composeColor: Color, val pdfRgb: FloatArray) {
     BLACK(Color.Black,               floatArrayOf(0f, 0f, 0f)),
@@ -172,6 +176,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
+
+    private val _outline = MutableStateFlow<List<OutlineItem>>(emptyList())
+    val outline: StateFlow<List<OutlineItem>> = _outline.asStateFlow()
 
     private var nextStrokeId = 0
     private val _completedInkStrokes = MutableStateFlow<Map<Int, List<InkStroke>>>(emptyMap())
@@ -711,6 +718,28 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun extractOutline(pdDoc: PDDocument): List<OutlineItem> {
+        val result = mutableListOf<OutlineItem>()
+        val root = pdDoc.documentCatalog.documentOutline ?: return result
+        fun traverse(item: PDOutlineItem?, level: Int) {
+            var current = item
+            while (current != null) {
+                val title = current.title.orEmpty().trim()
+                val dest = try { current.destination } catch (e: Exception) { null }
+                val pageIndex = (dest as? PDPageDestination)?.retrievePageNumber() ?: -1
+                if (title.isNotEmpty() && pageIndex >= 0) {
+                    result.add(OutlineItem(title, pageIndex, level))
+                }
+                traverse(current.firstChild, level + 1)
+                current = current.nextSibling
+            }
+        }
+        traverse(root.firstChild, 0)
+        return result.mapIndexed { i, item ->
+            item.copy(hasChildren = i + 1 < result.size && result[i + 1].level > result[i].level)
+        }
+    }
+
     private suspend fun renderPages(dirUri: Uri, docId: String, fileName: String): Unit =
         withContext(Dispatchers.IO) {
             try {
@@ -746,6 +775,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthor.value = author
                 }
+
+                // Extract outline (fast — just traverses bookmark tree)
+                val outline = extractOutline(pdDoc)
+                withContext(Dispatchers.Main) { _outline.value = outline }
 
                 // --- PHASE 1: bitmaps + links only ---
                 val pages = renderMutex.withLock {
