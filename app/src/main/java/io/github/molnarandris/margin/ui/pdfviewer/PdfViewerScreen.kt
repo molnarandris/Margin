@@ -10,7 +10,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -141,6 +140,7 @@ fun PdfViewerScreen(
     var isEditDialogVisible by remember { mutableStateOf(false) }
     var titleEditText  by remember { mutableStateOf("") }
     var authorEditText by remember { mutableStateOf("") }
+    var currentPage by remember { mutableStateOf(0) }
 
     var topBarVisible by remember { mutableStateOf(true) }
     val view = LocalView.current
@@ -229,9 +229,15 @@ fun PdfViewerScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (pdfAuthor.isNotEmpty()) {
+                            val totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0
+                            val pageInfo = if (totalPages > 0) "${currentPage + 1} / $totalPages" else ""
+                            val subtitle = listOfNotNull(
+                                pdfAuthor.ifEmpty { null },
+                                pageInfo.ifEmpty { null }
+                            ).joinToString("  ·  ")
+                            if (subtitle.isNotEmpty()) {
                                 Text(
-                                    text = pdfAuthor,
+                                    text = subtitle,
                                     fontSize = 12.sp,
                                     lineHeight = 14.sp,
                                     maxLines = 1,
@@ -313,7 +319,6 @@ fun PdfViewerScreen(
                 var viewportHeightPx by remember { mutableFloatStateOf(0f) }
                 var offsetY by remember { mutableFloatStateOf(0f) }
                 val currentSelectionRef = rememberUpdatedState(textSelection)
-                var currentPage by remember { mutableStateOf(0) }
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
                 val clipboardManager = LocalClipboardManager.current
@@ -1007,19 +1012,19 @@ private fun PenToolbar(
     selectedColor: StrokeColor, selectedThickness: StrokeThickness,
     onColorSelected: (StrokeColor) -> Unit, onThicknessSelected: (StrokeThickness) -> Unit
 ) {
-    Surface(tonalElevation = 3.dp, shadowElevation = 8.dp) {
+    Surface(tonalElevation = 0.dp, shadowElevation = 4.dp) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 StrokeThickness.entries.forEach { t ->
-                    ThicknessButton(t, t == selectedThickness, selectedColor) { onThicknessSelected(t) }
+                    ThicknessButton(t, t == selectedThickness) { onThicknessSelected(t) }
                 }
             }
-            Box(Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 StrokeColor.entries.forEach { c ->
                     ColorButton(c, c == selectedColor) { onColorSelected(c) }
                 }
@@ -1029,34 +1034,39 @@ private fun PenToolbar(
 }
 
 @Composable
-private fun ThicknessButton(thickness: StrokeThickness, isSelected: Boolean, currentColor: StrokeColor, onClick: () -> Unit) {
-    val dotSize = when (thickness) {
-        StrokeThickness.THIN -> 8.dp
-        StrokeThickness.MEDIUM -> 14.dp
-        StrokeThickness.THICK -> 22.dp
+private fun ThicknessButton(thickness: StrokeThickness, isSelected: Boolean, onClick: () -> Unit) {
+    val lineThickness = when (thickness) {
+        StrokeThickness.THIN -> 1.5.dp
+        StrokeThickness.MEDIUM -> 3.dp
+        StrokeThickness.THICK -> 6.dp
     }
+    val lineWidth = 20.dp
+    val pillShape = RoundedCornerShape(50)
+    val roundedShape = RoundedCornerShape(35)
     Box(
-        modifier = Modifier.size(40.dp).clip(CircleShape)
-            .then(if (isSelected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, CircleShape) else Modifier)
-            .clickable(onClick = onClick),
+        modifier = Modifier.size(32.dp).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Box(Modifier.size(dotSize).clip(CircleShape).background(currentColor.composeColor))
+        if (isSelected) {
+            Box(Modifier.size(26.dp).border(1.5.dp,  MaterialTheme.colorScheme.outline, roundedShape))
+        }
+        Box(Modifier.width(lineWidth).height(lineThickness).clip(pillShape).background(Color.Black))
     }
 }
 
 @Composable
 private fun ColorButton(color: StrokeColor, isSelected: Boolean, onClick: () -> Unit) {
-    val ringColor = if (color == StrokeColor.BLACK) MaterialTheme.colorScheme.outline else color.composeColor
+    val ringColor = MaterialTheme.colorScheme.outline
+    val roundedShape = RoundedCornerShape(35)
     Box(
-        modifier = Modifier.size(40.dp).clip(CircleShape)
-            .then(if (isSelected) Modifier.border(2.dp, ringColor, CircleShape) else Modifier)
-            .clickable(onClick = onClick),
+        modifier = Modifier.size(32.dp).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
+        if (isSelected) {
+            Box(Modifier.size(26.dp).border(1.5.dp, ringColor, roundedShape))
+        }
         Box(
-            Modifier.size(24.dp).clip(CircleShape).background(color.composeColor)
-                .then(if (color == StrokeColor.BLACK) Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape) else Modifier)
+            Modifier.size(18.dp).clip(roundedShape).background(color.composeColor)
         )
     }
 }
