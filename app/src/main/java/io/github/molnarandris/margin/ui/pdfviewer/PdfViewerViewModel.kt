@@ -18,6 +18,7 @@ import com.tom_roush.pdfbox.cos.COSNumber
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
+import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
@@ -84,7 +85,8 @@ data class InkStroke(
     val id: Int,
     val points: List<Offset>,
     val color: StrokeColor = StrokeColor.BLACK,
-    val thickness: StrokeThickness = StrokeThickness.MEDIUM
+    val thickness: StrokeThickness = StrokeThickness.MEDIUM,
+    val roundCap: Boolean = false
 )
 
 data class PdfPage(
@@ -383,7 +385,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val normalized = points.map { Offset(it.x / displayWidth, it.y / displayHeight) }
         val strokeId = nextStrokeId++
         _completedInkStrokes.update { map ->
-            map + (pageIndex to (map[pageIndex].orEmpty() + InkStroke(strokeId, normalized, color, thickness)))
+            map + (pageIndex to (map[pageIndex].orEmpty() + InkStroke(strokeId, normalized, color, thickness, roundCap = true)))
         }
         viewModelScope.launch(Dispatchers.IO) {
             val uri = docUri ?: return@launch
@@ -426,6 +428,31 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     setName(COSName.SUBTYPE, "S")
                     setItem(COSName.getPDFName("W"), COSFloat(thickness.multiplier * 1.5f))
                 }
+
+                // Appearance stream with round line caps (1 J)
+                val rgb = color.pdfRgb
+                val apContent = buildString {
+                    append("q ")
+                    append("1 J ")  // round line cap
+                    append("1 j ")  // round line join
+                    append("%.4f w ".format(strokeWidth))
+                    append("%.4f %.4f %.4f RG ".format(rgb[0], rgb[1], rgb[2]))
+                    for (i in coords.indices step 2) {
+                        val op = if (i == 0) "m" else "l"
+                        append("%.4f %.4f $op ".format(coords[i], coords[i + 1]))
+                    }
+                    append("S Q")
+                }.toByteArray()
+                val apStream = PDStream(pdDoc)
+                apStream.createOutputStream().use { it.write(apContent) }
+                val apCos = apStream.cosObject
+                apCos.setName(COSName.TYPE, "XObject")
+                apCos.setName(COSName.SUBTYPE, "Form")
+                apCos.setItem(COSName.BBOX, COSArray().apply {
+                    listOf(minX - pad, minY - pad, maxX + pad, maxY + pad).forEach { add(COSFloat(it)) }
+                })
+                val apDict = COSDictionary().apply { setItem(COSName.N, apCos) }
+
                 val annDict = COSDictionary().apply {
                     setName(COSName.TYPE, "Annot")
                     setName(COSName.SUBTYPE, "Ink")
@@ -433,6 +460,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     setItem(COSName.RECT, rectArr)
                     setItem(COSName.getPDFName("C"), colorArr)
                     setItem(COSName.getPDFName("BS"), bsDict)
+                    setItem(COSName.AP, apDict)
                     setString(COSName.NM, "ink-$strokeId")
                 }
                 pdPage.annotations.add(PDAnnotationUnknown(annDict))
@@ -604,7 +632,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     val strokeThickness = StrokeThickness.entries.minByOrNull { kotlin.math.abs(it.multiplier * 1.5f - w) }
                         ?: StrokeThickness.MEDIUM
 
-                    if (points.isNotEmpty()) result.add(InkStroke(id, points, strokeColor, strokeThickness))
+                    val roundCap = cosObj.getDictionaryObject(COSName.AP) != null
+                    if (points.isNotEmpty()) result.add(InkStroke(id, points, strokeColor, strokeThickness, roundCap))
                 }
             }
             result

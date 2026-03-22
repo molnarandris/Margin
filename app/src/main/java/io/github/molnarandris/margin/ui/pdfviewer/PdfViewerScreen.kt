@@ -1,6 +1,5 @@
 package io.github.molnarandris.margin.ui.pdfviewer
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
@@ -64,9 +63,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalView
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -78,6 +74,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerType
@@ -144,36 +142,7 @@ fun PdfViewerScreen(
 
     var topBarVisible by remember { mutableStateOf(true) }
     val view = LocalView.current
-    DisposableEffect(Unit) {
-        val window = (view.context as Activity).window
-        val controller = WindowInsetsControllerCompat(window, view)
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
-            if (insets.isVisible(WindowInsetsCompat.Type.systemBars())) {
-                controller.hide(WindowInsetsCompat.Type.systemBars())
-            }
-            ViewCompat.onApplyWindowInsets(v, insets)
-        }
-        onDispose {
-            ViewCompat.setOnApplyWindowInsetsListener(view, null)
-            controller.show(WindowInsetsCompat.Type.systemBars())
-        }
-    }
     val gestureZonePx = remember { 32 * view.resources.displayMetrics.density }
-    DisposableEffect(Unit) {
-        val listener = android.view.View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
-            v.systemGestureExclusionRects = listOf(
-                android.graphics.Rect(v.width - gestureZonePx.toInt(), 0, v.width, v.height)
-            )
-        }
-        view.addOnLayoutChangeListener(listener)
-        onDispose {
-            view.removeOnLayoutChangeListener(listener)
-            view.systemGestureExclusionRects = emptyList()
-            val window = (view.context as Activity).window
-            WindowInsetsControllerCompat(window, view).show(WindowInsetsCompat.Type.systemBars())
-        }
-    }
 
     LaunchedEffect(searchQuery) {
         viewModel.search(searchQuery)
@@ -805,7 +774,9 @@ private fun PageContent(
                             moveTo(x0, y0)
                             pts.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
                         }
-                        drawPath(path, color = c, style = Stroke(width = w))
+                        val cap = if (stroke.roundCap) StrokeCap.Round else StrokeCap.Butt
+                        val join = if (stroke.roundCap) StrokeJoin.Round else StrokeJoin.Miter
+                        drawPath(path, color = c, style = Stroke(width = w, cap = cap, join = join))
                     }
                 }
             }
@@ -823,7 +794,7 @@ private fun PageContent(
                         moveTo(inkStroke.first().x, inkStroke.first().y)
                         inkStroke.drop(1).forEach { lineTo(it.x, it.y) }
                     }
-                    drawPath(path, color = c, style = Stroke(width = w))
+                    drawPath(path, color = c, style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
             }
         }
