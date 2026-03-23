@@ -106,6 +106,7 @@ sealed class UndoableAction {
     data class HighlightDeleted(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
     data class AnnotationEdited(val pageIndex: Int, val bounds: List<RectF>, val oldNote: String?, val newNote: String?) : UndoableAction()
     data class MetadataChanged(val oldTitle: String, val newTitle: String, val oldAuthor: String, val newAuthor: String) : UndoableAction()
+    data class StrokesMoved(val pageIndex: Int, val originalStrokes: List<InkStroke>, val movedStrokes: List<InkStroke>) : UndoableAction()
 }
 
 data class PdfPage(
@@ -273,6 +274,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 is UndoableAction.MetadataChanged ->
                     setMetadata(action.oldTitle, action.oldAuthor)
+                is UndoableAction.StrokesMoved ->
+                    moveInkStrokes(action.pageIndex, action.movedStrokes, action.originalStrokes)
             }
         } finally {
             isUndoRedoInProgress = false
@@ -302,6 +305,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 is UndoableAction.MetadataChanged ->
                     setMetadata(action.newTitle, action.newAuthor)
+                is UndoableAction.StrokesMoved ->
+                    moveInkStrokes(action.pageIndex, action.originalStrokes, action.movedStrokes)
             }
         } finally {
             isUndoRedoInProgress = false
@@ -544,9 +549,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // Must be called within renderMutex.withLock, with renderer/pfd already closed
-    private suspend fun writeInkStrokeToPdf(uri: Uri, app: Application, pageIndex: Int, stroke: InkStroke) {
-        val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+    // Builds and adds a single ink annotation to an already-open PDDocument (does NOT save)
+    private fun addInkAnnotationToDoc(pdDoc: PDDocument, pageIndex: Int, stroke: InkStroke) {
         val pdPage = pdDoc.getPage(pageIndex)
         val pageW = pdPage.mediaBox.width
         val pageH = pdPage.mediaBox.height
@@ -612,12 +616,51 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             setString(COSName.NM, "ink-${stroke.id}")
         }
         pdPage.annotations.add(PDAnnotationUnknown(annDict))
+    }
 
+    // Must be called within renderMutex.withLock, with renderer/pfd already closed
+    private suspend fun writeInkStrokeToPdf(uri: Uri, app: Application, pageIndex: Int, stroke: InkStroke) {
+        val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+        addInkAnnotationToDoc(pdDoc, pageIndex, stroke)
         pdDoc.saveWithBackup(app, uri)
         pdDoc.close()
-
         pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
         renderer = PdfRenderer(pfd!!)
+    }
+
+    // Remove originals and write moved strokes in a single PDF save.
+    // Must be called within renderMutex.withLock, with renderer/pfd already closed.
+    private suspend fun moveInkStrokesInPdf(
+        uri: Uri, app: Application, pageIndex: Int,
+        originalStrokes: List<InkStroke>, movedStrokes: List<InkStroke>
+    ) {
+        val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+        val pdPage = pdDoc.getPage(pageIndex)
+        val origNames = originalStrokes.map { "ink-${it.id}" }.toSet()
+        pdPage.annotations.removeAll { it.annotationName in origNames }
+        for (s in movedStrokes) addInkAnnotationToDoc(pdDoc, pageIndex, s)
+        pdDoc.saveWithBackup(app, uri)
+        pdDoc.close()
+        pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
+        renderer = PdfRenderer(pfd!!)
+    }
+
+    fun moveInkStrokes(pageIndex: Int, originalStrokes: List<InkStroke>, movedStrokes: List<InkStroke>) {
+        _completedInkStrokes.update { map ->
+            val origIds = originalStrokes.map { it.id }.toSet()
+            val kept = map[pageIndex].orEmpty().filter { it.id !in origIds }
+            map + (pageIndex to kept + movedStrokes)
+        }
+        pushUndo(UndoableAction.StrokesMoved(pageIndex, originalStrokes, movedStrokes))
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+                moveInkStrokesInPdf(uri, app, pageIndex, originalStrokes, movedStrokes)
+            }
+        }
     }
 
     fun addInkAnnotation(

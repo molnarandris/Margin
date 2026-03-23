@@ -129,6 +129,13 @@ private data class PageTextSelection(
     val existingHighlight: PdfHighlight? = null
 )
 
+private data class InkStrokeSelection(
+    val pageIndex: Int,
+    val strokes: List<InkStroke>,
+    val bounds: Rect,                        // Screen-pixel bounds within PageContent
+    val dragOffsetPx: Offset = Offset.Zero   // Live drag delta (pre-commit)
+)
+
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun PdfViewerScreen(
@@ -456,6 +463,7 @@ fun PdfViewerScreen(
                 var destinationHighlight by remember { mutableStateOf<DestinationHighlight?>(null) }
                 var jumpOrigin by remember { mutableStateOf<JumpOrigin?>(null) }
                 var textSelection by remember { mutableStateOf<PageTextSelection?>(null) }
+                var inkStrokeSelection by remember { mutableStateOf<InkStrokeSelection?>(null) }
                 // Used during handle dragging so we don't update textSelection on every event
                 var dragChars by remember { mutableStateOf<List<TextChar>?>(null) }
                 var isDraggingHandle by remember { mutableStateOf(false) }
@@ -714,6 +722,26 @@ fun PdfViewerScreen(
                                 onCopy = { clipboardManager.setText(AnnotatedString(it)) },
                                 onEraseInkStrokes = { pageIdx, ids -> viewModel.eraseInkStrokes(pageIdx, ids) },
                                 onAddInkAnnotation = { pageIdx, stroke, w, h -> viewModel.addInkAnnotation(pageIdx, stroke, w, h) },
+                                inkStrokeSelection = inkStrokeSelection,
+                                onStrokeSelectionChanged = { inkStrokeSelection = it },
+                                onSelectionDragDelta = { d ->
+                                    inkStrokeSelection = inkStrokeSelection?.let { s -> s.copy(dragOffsetPx = s.dragOffsetPx + d) }
+                                },
+                                onCommitSelectionMove = { pageIdx, origStrokes, totalDeltaPx, pgSize ->
+                                    val dx = totalDeltaPx.x / pgSize.width
+                                    val dy = totalDeltaPx.y / pgSize.height
+                                    val movedStrokes = origStrokes.map { s ->
+                                        s.copy(points = s.points.map { Offset(it.x + dx, it.y + dy) })
+                                    }
+                                    viewModel.moveInkStrokes(pageIdx, origStrokes, movedStrokes)
+                                    inkStrokeSelection = inkStrokeSelection?.let { sel ->
+                                        sel.copy(
+                                            strokes = movedStrokes,
+                                            bounds = sel.bounds.translate(totalDeltaPx),
+                                            dragOffsetPx = Offset.Zero
+                                        )
+                                    }
+                                },
                                 onLinkTap = { target, linkBoundsFirstRect ->
                                     when (target) {
                                         is LinkTarget.Url -> context.startActivity(Intent(Intent.ACTION_VIEW, target.uri))
@@ -779,30 +807,114 @@ private fun PageContent(
     onAddInkAnnotation: (Int, List<Offset>, Int, Int) -> Unit,
     onLinkTap: (LinkTarget, android.graphics.RectF) -> Unit,
     groupIntoLines: (List<TextChar>) -> List<List<TextChar>>,
-    charsFrom: (TextChar, TextChar, List<TextChar>) -> List<TextChar>
+    charsFrom: (TextChar, TextChar, List<TextChar>) -> List<TextChar>,
+    inkStrokeSelection: InkStrokeSelection?,
+    onStrokeSelectionChanged: (InkStrokeSelection?) -> Unit,
+    onSelectionDragDelta: (Offset) -> Unit,
+    onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit
 ) {
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
     var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
     val completedInkStrokesRef = rememberUpdatedState(completedInkStrokes)
+    val inkStrokeSelectionRef = rememberUpdatedState(inkStrokeSelection)
     val indexRef = rememberUpdatedState(index)
     Box(modifier = Modifier.pointerInput(page.nativeWidth, page.nativeHeight) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            val currentIndex = indexRef.value
+
+            // ── Handle active selection (both stylus and finger) ──────────────
+            val sel = inkStrokeSelectionRef.value
+            if (sel != null && sel.pageIndex == currentIndex) {
+                val actualBounds = sel.bounds.translate(sel.dragOffsetPx)
+                if (actualBounds.contains(down.position)) {
+                    // Move gesture: pen/finger inside selection box
+                    down.consume()
+                    var prevPos = down.position
+                    var totalDelta = Offset.Zero
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.find { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            if (totalDelta != Offset.Zero)
+                                onCommitSelectionMove(currentIndex, sel.strokes, totalDelta, pageSize)
+                            break
+                        }
+                        change.consume()
+                        val delta = change.position - prevPos
+                        prevPos = change.position
+                        totalDelta += delta
+                        onSelectionDragDelta(delta)
+                    }
+                    return@awaitEachGesture
+                } else {
+                    // Tap outside: deselect
+                    onStrokeSelectionChanged(null)
+                    if (down.type != PointerType.Stylus && down.type != PointerType.Eraser) return@awaitEachGesture
+                }
+            }
+
             if (down.type != PointerType.Stylus && down.type != PointerType.Eraser) return@awaitEachGesture
             down.consume()
+
+            // ── Phase A: Collect stroke points, detect lasso closure ──────────
             val points = mutableListOf(down.position)
-            currentInkStroke = (listOf(down.position))
+            currentInkStroke = listOf(down.position)
+            var lassoClosedAt: Long? = null
+            var triggerLasso = false
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val change = event.changes.find { it.id == down.id } ?: break
                 if (!change.pressed) break
                 change.consume()
                 points.add(change.position)
-                currentInkStroke = (points.toList())
+                currentInkStroke = points.toList()
+                if (isApproxClosed(points)) {
+                    if (lassoClosedAt == null) lassoClosedAt = System.currentTimeMillis()
+                    if (System.currentTimeMillis() - lassoClosedAt >= 600L) {
+                        triggerLasso = true
+                        break
+                    }
+                } else {
+                    lassoClosedAt = null
+                }
             }
+            currentInkStroke = null  // Always clear the lasso/stroke visual
+
+            if (triggerLasso && pageSize != IntSize.Zero) {
+                // ── Phase B: Compute selection ────────────────────────────────
+                val pageStrokes = completedInkStrokesRef.value[currentIndex]
+                val selected = pageStrokes?.filter {
+                    fractionInsidePolygon(it, points, pageSize) >= 0.80f
+                } ?: emptyList()
+                if (selected.isNotEmpty()) {
+                    val bounds = computeSelectionBounds(selected, pageSize)
+                    onStrokeSelectionChanged(InkStrokeSelection(currentIndex, selected, bounds))
+                }
+                // ── Phase C: Seamless move (pen still held after lasso trigger) ─
+                var prevPos = points.last()
+                var totalDelta = Offset.Zero
+                val selectedForMove = selected  // capture for commit
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.find { it.id == down.id } ?: break
+                    if (!change.pressed) {
+                        if (totalDelta != Offset.Zero && selectedForMove.isNotEmpty())
+                            onCommitSelectionMove(currentIndex, selectedForMove, totalDelta, pageSize)
+                        break
+                    }
+                    change.consume()
+                    val delta = change.position - prevPos
+                    prevPos = change.position
+                    totalDelta += delta
+                    onSelectionDragDelta(delta)
+                }
+                return@awaitEachGesture  // Never becomes an ink stroke
+            }
+
+            // ── Normal stroke / scribble logic (unchanged) ────────────────────
             if (pageSize != IntSize.Zero) {
                 val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
-                val currentIndex = indexRef.value
                 val pageStrokes = completedInkStrokesRef.value[currentIndex]
                 if (isScribble(points)) {
                     val intersecting = pageStrokes?.filter {
@@ -812,13 +924,11 @@ private fun PageContent(
                     if (intersecting.isNotEmpty()) {
                         onEraseInkStrokes(currentIndex, intersecting.map { it.id })
                     }
-                    currentInkStroke = null
                     return@awaitEachGesture
                 }
                 val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
                 onAddInkAnnotation(currentIndex, stroke, pageSize.width, pageSize.height)
             }
-            currentInkStroke = (null)
         }
     }) {
         Image(
@@ -944,6 +1054,9 @@ private fun PageContent(
             }
         }
         val pageStrokes = completedInkStrokes[index]
+        val activeSel = inkStrokeSelection?.takeIf { it.pageIndex == index }
+        val selIds = activeSel?.strokes?.map { it.id }?.toSet() ?: emptySet()
+        val dragPx = activeSel?.dragOffsetPx ?: Offset.Zero
         if (!pageStrokes.isNullOrEmpty()) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val baseStrokePx = size.width / page.nativeWidth
@@ -952,20 +1065,36 @@ private fun PageContent(
                     if (pts.size < 2) continue
                     val c = stroke.color.composeColor
                     val w = baseStrokePx * stroke.thickness.multiplier
-                    val x0 = pts.first().x * size.width
-                    val y0 = pts.first().y * size.height
+                    val dxNorm = if (stroke.id in selIds) dragPx.x / size.width  else 0f
+                    val dyNorm = if (stroke.id in selIds) dragPx.y / size.height else 0f
+                    val x0 = (pts.first().x + dxNorm) * size.width
+                    val y0 = (pts.first().y + dyNorm) * size.height
                     if (pts.first() == pts.last()) {
                         drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
                     } else {
                         val path = Path().apply {
                             moveTo(x0, y0)
-                            pts.drop(1).forEach { lineTo(it.x * size.width, it.y * size.height) }
+                            pts.drop(1).forEach { lineTo((it.x + dxNorm) * size.width, (it.y + dyNorm) * size.height) }
                         }
                         val cap = if (stroke.roundCap) StrokeCap.Round else StrokeCap.Butt
                         val join = if (stroke.roundCap) StrokeJoin.Round else StrokeJoin.Miter
                         drawPath(path, color = c, style = Stroke(width = w, cap = cap, join = join))
                     }
                 }
+            }
+        }
+        if (activeSel != null) {
+            val b = activeSel.bounds.translate(activeSel.dragOffsetPx)
+            Canvas(modifier = Modifier.matchParentSize()) {
+                drawRect(
+                    color = Color(0xFF00BCD4.toInt()),
+                    topLeft = Offset(b.left, b.top),
+                    size = Size(b.width, b.height),
+                    style = Stroke(
+                        width = 2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f)
+                    )
+                )
             }
         }
         val inkStroke = currentInkStroke
@@ -1423,4 +1552,49 @@ private fun DotLeaderOutlineText(
             )
         }
     }
+}
+
+// Returns true if the drawn path is approximately closed (end ≈ start relative to bounding-box size).
+private fun isApproxClosed(points: List<Offset>): Boolean {
+    if (points.size < 20) return false
+    val minX = points.minOf { it.x }; val maxX = points.maxOf { it.x }
+    val minY = points.minOf { it.y }; val maxY = points.maxOf { it.y }
+    val bboxDiag = sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY))
+    if (bboxDiag < 50f) return false
+    val dx = points.last().x - points.first().x
+    val dy = points.last().y - points.first().y
+    return sqrt(dx * dx + dy * dy) < bboxDiag * 0.30f
+}
+
+// Ray-casting point-in-polygon test (all in the same coordinate space).
+private fun pointInPolygon(pt: Offset, poly: List<Offset>): Boolean {
+    var inside = false
+    var j = poly.size - 1
+    for (i in poly.indices) {
+        val xi = poly[i].x; val yi = poly[i].y
+        val xj = poly[j].x; val yj = poly[j].y
+        if ((yi > pt.y) != (yj > pt.y) && pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)
+            inside = !inside
+        j = i
+    }
+    return inside
+}
+
+// Fraction of a stroke's points (un-normalized to screen pixels) that are inside the polygon.
+private fun fractionInsidePolygon(stroke: InkStroke, polyPx: List<Offset>, pageSize: IntSize): Float {
+    if (stroke.points.isEmpty()) return 0f
+    val pts = stroke.points.map { Offset(it.x * pageSize.width, it.y * pageSize.height) }
+    return pts.count { pointInPolygon(it, polyPx) }.toFloat() / pts.size
+}
+
+// Tight bounding box of all stroke points in screen-pixel space, with padding.
+private fun computeSelectionBounds(strokes: List<InkStroke>, pageSize: IntSize): Rect {
+    val allPts = strokes.flatMap { it.points }
+    val pad = 12f
+    return Rect(
+        left   = allPts.minOf { it.x } * pageSize.width  - pad,
+        top    = allPts.minOf { it.y } * pageSize.height - pad,
+        right  = allPts.maxOf { it.x } * pageSize.width  + pad,
+        bottom = allPts.maxOf { it.y } * pageSize.height + pad
+    )
 }
