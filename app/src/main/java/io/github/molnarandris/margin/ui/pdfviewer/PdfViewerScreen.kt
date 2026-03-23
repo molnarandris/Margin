@@ -34,7 +34,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -144,6 +146,8 @@ fun PdfViewerScreen(
     val completedInkStrokes by viewModel.completedInkStrokes.collectAsState()
     val penColor by viewModel.penColor.collectAsState()
     val penThickness by viewModel.penThickness.collectAsState()
+    val canUndo by viewModel.canUndo.collectAsState()
+    val canRedo by viewModel.canRedo.collectAsState()
     val pendingScrollToPage by viewModel.pendingScrollToPage.collectAsState()
     val outline by viewModel.outline.collectAsState()
     var isOutlineVisible by remember { mutableStateOf(false) }
@@ -267,7 +271,11 @@ fun PdfViewerScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .animateItem()
-                            .clickable { currentPage = item.pageIndex; isOutlineVisible = false }
+                            .clickable {
+                                viewModel.recordPageJump(currentPage, item.pageIndex)
+                                currentPage = item.pageIndex
+                                isOutlineVisible = false
+                            }
                             .padding(
                                 start = (16 + item.level * 24).dp,
                                 end = 8.dp, top = 12.dp, bottom = 12.dp
@@ -400,7 +408,11 @@ fun PdfViewerScreen(
                 onColorSelected = { viewModel.setPenColor(it) },
                 onThicknessSelected = { viewModel.setPenThickness(it) },
                 onInsertBefore = { viewModel.insertPage(currentPage) },
-                onInsertAfter = { viewModel.insertPage(currentPage + 1) }
+                onInsertAfter = { viewModel.insertPage(currentPage + 1) },
+                canUndo = canUndo,
+                canRedo = canRedo,
+                onUndo = { viewModel.undo() },
+                onRedo = { viewModel.redo() }
             )
         } },
     ) { innerPadding ->
@@ -706,6 +718,7 @@ fun PdfViewerScreen(
                                     when (target) {
                                         is LinkTarget.Url -> context.startActivity(Intent(Intent.ACTION_VIEW, target.uri))
                                         is LinkTarget.Goto -> coroutineScope.launch {
+                                            viewModel.recordPageJump(currentPage, target.pageNumber)
                                             jumpOrigin = JumpOrigin(
                                                 pageIndex = currentPage,
                                                 scrollOffset = 0,
@@ -1175,7 +1188,9 @@ private fun PageContent(
 private fun PenToolbar(
     selectedColor: StrokeColor, selectedThickness: StrokeThickness,
     onColorSelected: (StrokeColor) -> Unit, onThicknessSelected: (StrokeThickness) -> Unit,
-    onInsertBefore: () -> Unit, onInsertAfter: () -> Unit
+    onInsertBefore: () -> Unit, onInsertAfter: () -> Unit,
+    canUndo: Boolean, canRedo: Boolean,
+    onUndo: () -> Unit, onRedo: () -> Unit
 ) {
     Surface(tonalElevation = 0.dp, shadowElevation = 4.dp) {
         Row(
@@ -1183,6 +1198,15 @@ private fun PenToolbar(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onUndo, enabled = canUndo) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                }
+                IconButton(onClick = onRedo, enabled = canRedo) {
+                    Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                }
+            }
+            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 StrokeThickness.entries.forEach { t ->
                     ThicknessButton(t, t == selectedThickness) { onThicknessSelected(t) }
