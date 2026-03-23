@@ -9,8 +9,21 @@ import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "")
+
+private fun backupFileFor(context: Context, uri: Uri): File =
+    File(context.filesDir, "backup_${uri.toString().hashCode()}.pdf")
+
+private fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
+    val backup = backupFileFor(context, uri)
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        backup.outputStream().use { input.copyTo(it) }
+    }
+    context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
+    backup.delete()
+}
 
 class PdfRepository(private val context: Context) {
 
@@ -65,7 +78,7 @@ class PdfRepository(private val context: Context) {
                 val info = doc.documentInformation
                 info.title = title.ifBlank { null }
                 info.author = author.ifBlank { null }
-                context.contentResolver.openOutputStream(uri, "wt")?.use { doc.save(it) }
+                doc.saveWithBackup(context, uri)
                 doc.close()
                 true
             } catch (e: Exception) {

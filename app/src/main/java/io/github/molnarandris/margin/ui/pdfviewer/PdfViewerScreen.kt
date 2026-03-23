@@ -50,7 +50,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -418,6 +420,21 @@ fun PdfViewerScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(text = "Error: ${state.message}")
+                }
+            }
+
+            is PdfViewerUiState.CorruptedWithBackup -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(innerPadding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("The PDF file is corrupted.")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { viewModel.restoreFromBackup(state.backupFile, state.uri) }) {
+                            Text("Restore backup")
+                        }
+                    }
                 }
             }
 

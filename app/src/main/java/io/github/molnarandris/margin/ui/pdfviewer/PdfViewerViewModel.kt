@@ -41,6 +41,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import android.content.Context
+import java.io.File
 
 sealed class LinkTarget {
     data class Url(val uri: Uri) : LinkTarget()
@@ -108,6 +110,19 @@ sealed class PdfViewerUiState {
     object Loading : PdfViewerUiState()
     data class Ready(val pages: List<PdfPage>, val title: String = "", val author: String = "") : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
+    data class CorruptedWithBackup(val backupFile: File, val uri: Uri) : PdfViewerUiState()
+}
+
+private fun backupFileFor(context: Context, uri: Uri): File =
+    File(context.filesDir, "backup_${uri.toString().hashCode()}.pdf")
+
+private fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
+    val backup = backupFileFor(context, uri)
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        backup.outputStream().use { input.copyTo(it) }
+    }
+    context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
+    backup.delete()
 }
 
 private class WordExtractor(private val pageCount: Int) : PDFTextStripper() {
@@ -251,7 +266,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 } else {
                     pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
                 }
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
             }
             withContext(Dispatchers.Main) {
@@ -404,7 +419,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 pdPage.annotations.add(ann)
 
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
 
                 // Re-extract highlights to get correct annotationIndex (needed for deletion)
                 val newHighlights = extractHighlights(pdDoc, pageIndex, pageH)
@@ -514,7 +529,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 pdPage.annotations.add(PDAnnotationUnknown(annDict))
 
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
 
                 // Re-open renderer without re-rendering the bitmap
@@ -544,7 +559,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val toRemove = annotations.filter { it.annotationName in namesToRemove }
                 annotations.removeAll(toRemove)
 
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
 
                 reloadPage(uri, app, pageIndex)
@@ -566,7 +581,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 if (highlight.annotationIndex in annotations.indices) {
                     annotations.removeAt(highlight.annotationIndex)
                 }
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
 
                 reloadPage(uri, app, highlight.pageIndex)
@@ -589,7 +604,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     if (note.isBlank()) ann.getCOSObject().removeItem(COSName.CONTENTS)
                     else ann.contents = note
                 }
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
 
                 reloadPage(uri, app, highlight.pageIndex)
@@ -864,8 +879,14 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     _uiState.value = PdfViewerUiState.Ready(enrichedPages, title, author)
                 }
             } catch (e: Exception) {
+                val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
+                val backup = backupFileFor(getApplication(), uri)
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
+                    _uiState.value = if (backup.exists()) {
+                        PdfViewerUiState.CorruptedWithBackup(backup, uri)
+                    } else {
+                        PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
+                    }
                 }
             }
         }
@@ -883,7 +904,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 info.title  = newTitle
                 info.author = newAuthor
                 pdDoc.documentInformation = info  // re-attach in case no /Info dict existed
-                app.contentResolver.openOutputStream(uri, "wt")!!.use { pdDoc.save(it) }
+                pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
@@ -896,6 +917,21 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 _displayAuthor.value = newAuthor
                 _uiState.value = state.copy(title = newTitle, author = newAuthor)
             }
+        }
+    }
+
+    fun restoreFromBackup(backupFile: File, uri: Uri) {
+        val dirUri = loadedDirUri ?: return
+        val docId = loadedDocId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { _uiState.value = PdfViewerUiState.Loading }
+            backupFile.inputStream().use { input ->
+                getApplication<Application>().contentResolver.openOutputStream(uri, "wt")!!.use {
+                    input.copyTo(it)
+                }
+            }
+            backupFile.delete()
+            renderPages(dirUri, docId, loadedFileName)
         }
     }
 
