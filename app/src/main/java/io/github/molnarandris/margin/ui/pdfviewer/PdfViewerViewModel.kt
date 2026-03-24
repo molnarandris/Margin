@@ -637,7 +637,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
         val pdPage = pdDoc.getPage(pageIndex)
         val origNames = originalStrokes.map { "ink-${it.id}" }.toSet()
-        pdPage.annotations.removeAll { it.annotationName in origNames }
+        val annotations = pdPage.annotations
+        val toRemove = annotations.filter { it.annotationName in origNames }
+        annotations.removeAll(toRemove)
         for (s in movedStrokes) addInkAnnotationToDoc(pdDoc, pageIndex, s)
         pdDoc.saveWithBackup(app, uri)
         pdDoc.close()

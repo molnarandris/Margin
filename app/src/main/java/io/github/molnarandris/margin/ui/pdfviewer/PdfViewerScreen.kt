@@ -848,9 +848,9 @@ private fun PageContent(
                     }
                     return@awaitEachGesture
                 } else {
-                    // Tap outside: deselect
+                    // Tap outside: deselect — do NOT draw, regardless of pointer type
                     onStrokeSelectionChanged(null)
-                    if (down.type != PointerType.Stylus && down.type != PointerType.Eraser) return@awaitEachGesture
+                    return@awaitEachGesture
                 }
             }
 
