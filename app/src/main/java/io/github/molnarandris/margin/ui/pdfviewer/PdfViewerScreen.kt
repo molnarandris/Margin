@@ -136,6 +136,8 @@ private data class InkStrokeSelection(
     val dragOffsetPx: Offset = Offset.Zero   // Live drag delta (pre-commit)
 )
 
+private data class ScribbleResult(val isScribble: Boolean, val reversalPoints: List<Offset>)
+
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun PdfViewerScreen(
@@ -916,15 +918,19 @@ private fun PageContent(
             if (pageSize != IntSize.Zero) {
                 val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
                 val pageStrokes = completedInkStrokesRef.value[currentIndex]
-                if (isScribble(points)) {
+                val scribble = isScribble(points)
+                if (scribble.isScribble) {
+                    val hull = convexHull(scribble.reversalPoints)
                     val intersecting = pageStrokes?.filter {
                         strokeIntersectsScribble(it.points, normalizedPoints) ||
-                        strokeNearScribble(it.points, points, pageSize, 10f)
+                        strokeNearScribble(it.points, points, pageSize, 10f) ||
+                        fractionInsidePolygon(it, hull, pageSize) >= 0.8f
                     } ?: emptyList()
                     if (intersecting.isNotEmpty()) {
                         onEraseInkStrokes(currentIndex, intersecting.map { it.id })
+                        return@awaitEachGesture
                     }
-                    return@awaitEachGesture
+                    // Scribble detected but nothing nearby → fall through and draw as ink
                 }
                 val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
                 onAddInkAnnotation(currentIndex, stroke, pageSize.width, pageSize.height)
@@ -1443,23 +1449,31 @@ private fun ColorButton(color: StrokeColor, isSelected: Boolean, onClick: () -> 
     }
 }
 
-private fun isScribble(points: List<Offset>): Boolean {
-    if (points.size < 3) return false
+private fun isScribble(points: List<Offset>): ScribbleResult {
+    val no = ScribbleResult(false, emptyList())
+    if (points.size < 3) return no
     var totalLength = 0f
     for (i in 1 until points.size) {
-        val dx = points[i].x - points[i-1].x
-        val dy = points[i].y - points[i-1].y
+        val dx = points[i].x - points[i-1].x; val dy = points[i].y - points[i-1].y
         totalLength += sqrt(dx * dx + dy * dy)
     }
-    if (totalLength < 20f) return false
-    var reversals = 0
-    for (i in 1 until points.size - 1) {
-        val dx1 = points[i].x - points[i-1].x; val dy1 = points[i].y - points[i-1].y
-        val dx2 = points[i+1].x - points[i].x; val dy2 = points[i+1].y - points[i].y
-        val dot = dx1 * dx2 + dy1 * dy2
-        if (dot < 0f && dot * dot > 0.0302f * (dx1*dx1 + dy1*dy1) * (dx2*dx2 + dy2*dy2)) reversals++
+    if (totalLength < 20f) return no
+    // Downsample: keep only points >= 8px apart to eliminate jitter from slow drawing
+    val ds = mutableListOf(points[0])
+    for (pt in points) {
+        val last = ds.last(); val dx = pt.x - last.x; val dy = pt.y - last.y
+        if (sqrt(dx * dx + dy * dy) >= 8f) ds.add(pt)
     }
-    return reversals >= 3
+    if (ds.size < 3) return no
+    val reversalPts = mutableListOf<Offset>()
+    for (i in 1 until ds.size - 1) {
+        val dx1 = ds[i].x - ds[i-1].x; val dy1 = ds[i].y - ds[i-1].y
+        val dx2 = ds[i+1].x - ds[i].x;  val dy2 = ds[i+1].y - ds[i].y
+        val dot = dx1 * dx2 + dy1 * dy2
+        if (dot < 0f && dot * dot > 0.0302f * (dx1*dx1 + dy1*dy1) * (dx2*dx2 + dy2*dy2))
+            reversalPts.add(ds[i])
+    }
+    return if (reversalPts.size >= 4) ScribbleResult(true, reversalPts) else no
 }
 
 private fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): Boolean {
@@ -1504,6 +1518,30 @@ private fun strokeNearScribble(
         for (j in 0 until strokePx.size - 1)
             if (pointToSegmentDist(pt, strokePx[j], strokePx[j + 1]) <= thresholdPx) return true
     return false
+}
+
+private fun convexHull(pts: List<Offset>): List<Offset> {
+    val points = pts.distinct()
+    if (points.size < 3) return points
+    var current = points.minByOrNull { it.x }!!
+    val hull = mutableListOf<Offset>()
+    do {
+        hull.add(current)
+        var next = points[0]
+        for (c in points) {
+            if (next == current) { next = c; continue }
+            val cross = (next.x - current.x) * (c.y - current.y) -
+                        (next.y - current.y) * (c.x - current.x)
+            if (cross < 0f) next = c
+            else if (cross == 0f) {
+                val d1 = (next.x - current.x).let { it * it } + (next.y - current.y).let { it * it }
+                val d2 = (c.x - current.x).let { it * it } + (c.y - current.y).let { it * it }
+                if (d2 > d1) next = c
+            }
+        }
+        current = next
+    } while (current != hull[0] && hull.size <= points.size)
+    return hull
 }
 
 @Composable
