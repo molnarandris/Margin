@@ -30,19 +30,23 @@ import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import android.content.Context
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 sealed class LinkTarget {
     data class Url(val uri: Uri) : LinkTarget()
@@ -128,13 +132,15 @@ sealed class PdfViewerUiState {
 private fun backupFileFor(context: Context, uri: Uri): File =
     File(context.filesDir, "backup_${uri.toString().hashCode()}.pdf")
 
-private fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
-    val backup = backupFileFor(context, uri)
-    context.contentResolver.openInputStream(uri)?.use { input ->
-        backup.outputStream().use { input.copyTo(it) }
+private suspend fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
+    PdfViewerViewModel.fileWriteLockFor(uri).withLock {
+        val backup = backupFileFor(context, uri)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            backup.outputStream().use { input.copyTo(it) }
+        }
+        context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
+        backup.delete()
     }
-    context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
-    backup.delete()
 }
 
 private class WordExtractor(private val pageCount: Int) : PDFTextStripper() {
@@ -317,6 +323,16 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var pfd: ParcelFileDescriptor? = null
     private var renderer: PdfRenderer? = null
     private val renderMutex = Mutex()
+    private val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun launchSave(block: suspend CoroutineScope.() -> Unit): Job =
+        saveScope.launch { block() }
+
+    // Pending ink strokes awaiting a batched save (main-thread access only)
+    private val pendingInkStrokes = mutableMapOf<Int, MutableList<InkStroke>>() // pageIndex → strokes
+    private var strokeSaveJob: Job? = null
+    private val STROKE_SAVE_DEBOUNCE_MS = 500L
+
     private var rerenderJob: Job? = null
     private var currentRenderScale = 2f
     private var docUri: Uri? = null
@@ -356,29 +372,88 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val dirUri = loadedDirUri ?: return
         val docId = loadedDocId ?: return
         rerenderJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
-            val app = getApplication<Application>()
-            renderMutex.withLock {
-                renderer?.close(); pfd?.close()
-                renderer = null; pfd = null
+        flushPendingInkStrokes()
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
-                val newPage = PDPage(mediaBox)
-                if (insertBeforeIndex >= pdDoc.numberOfPages) {
-                    pdDoc.addPage(newPage)
-                } else {
-                    pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
+        // Phase 1: show blank page immediately (no IO)
+        val currentState = _uiState.value
+        if (currentState is PdfViewerUiState.Ready) {
+            val refPage = currentState.pages.getOrElse(insertBeforeIndex) { currentState.pages.last() }
+            val blankBitmap = Bitmap.createBitmap(
+                refPage.bitmap.width, refPage.bitmap.height, Bitmap.Config.ARGB_8888
+            ).also { android.graphics.Canvas(it).drawColor(android.graphics.Color.WHITE) }
+            val blankPage = PdfPage(
+                bitmap = blankBitmap,
+                nativeWidth = refPage.nativeWidth,
+                nativeHeight = refPage.nativeHeight,
+                links = emptyList(),
+                words = emptyList(),
+                highlights = emptyList()
+            )
+            val newPages = currentState.pages.toMutableList()
+            newPages.add(insertBeforeIndex.coerceIn(0, newPages.size), blankPage)
+            _uiState.value = currentState.copy(pages = newPages)
+
+            // Shift ink stroke page indices for pages at or after insertion point
+            _completedInkStrokes.update { map ->
+                map.entries.associate { (pageIndex, strokes) ->
+                    if (pageIndex >= insertBeforeIndex) pageIndex + 1 to strokes
+                    else pageIndex to strokes
                 }
-                pdDoc.saveWithBackup(app, uri)
-                pdDoc.close()
             }
-            withContext(Dispatchers.Main) {
-                _pendingScrollToPage.value = insertBeforeIndex
-                _uiState.value = PdfViewerUiState.Loading
+            _pendingScrollToPage.value = insertBeforeIndex
+
+            // Phase 2: save to PDF and silently reopen renderer in background
+            launchSave {
+                val uri = docUri ?: return@launchSave
+                val app = getApplication<Application>()
+                renderMutex.withLock {
+                    renderer?.close(); pfd?.close()
+                    renderer = null; pfd = null
+
+                    val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                    val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
+                    val newPage = PDPage(mediaBox)
+                    if (insertBeforeIndex >= pdDoc.numberOfPages) {
+                        pdDoc.addPage(newPage)
+                    } else {
+                        pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
+                    }
+                    pdDoc.saveWithBackup(app, uri)
+                    pdDoc.close()
+
+                    // Silently reopen renderer — no Loading state, no renderPages()
+                    val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                    pfd = newPfd
+                    renderer = PdfRenderer(newPfd)
+                }
             }
-            renderPages(dirUri, docId, loadedFileName)
+
+        } else {
+            // Fallback: not Ready (Loading/Error) — go through full reload (original behaviour)
+            launchSave {
+                val uri = docUri ?: return@launchSave
+                val app = getApplication<Application>()
+                renderMutex.withLock {
+                    renderer?.close(); pfd?.close()
+                    renderer = null; pfd = null
+
+                    val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                    val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
+                    val newPage = PDPage(mediaBox)
+                    if (insertBeforeIndex >= pdDoc.numberOfPages) {
+                        pdDoc.addPage(newPage)
+                    } else {
+                        pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
+                    }
+                    pdDoc.saveWithBackup(app, uri)
+                    pdDoc.close()
+                }
+                withContext(Dispatchers.Main) {
+                    _pendingScrollToPage.value = insertBeforeIndex
+                    _uiState.value = PdfViewerUiState.Loading
+                }
+                renderPages(dirUri, docId, loadedFileName)
+            }
         }
     }
 
@@ -488,8 +563,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         // Phase 2: save to PDF and update annotationIndex in background
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        flushPendingInkStrokes()
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
@@ -619,32 +695,40 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // Must be called within renderMutex.withLock, with renderer/pfd already closed
-    private suspend fun writeInkStrokeToPdf(uri: Uri, app: Application, pageIndex: Int, stroke: InkStroke) {
+    private suspend fun writeInkStrokesToPdf(
+        uri: Uri, app: Application, strokesByPage: Map<Int, List<InkStroke>>
+    ) {
         val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-        addInkAnnotationToDoc(pdDoc, pageIndex, stroke)
+        strokesByPage.forEach { (pageIndex, strokes) ->
+            strokes.forEach { stroke -> addInkAnnotationToDoc(pdDoc, pageIndex, stroke) }
+        }
         pdDoc.saveWithBackup(app, uri)
         pdDoc.close()
         pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
         renderer = PdfRenderer(pfd!!)
     }
 
-    // Remove originals and write moved strokes in a single PDF save.
-    // Must be called within renderMutex.withLock, with renderer/pfd already closed.
-    private suspend fun moveInkStrokesInPdf(
-        uri: Uri, app: Application, pageIndex: Int,
-        originalStrokes: List<InkStroke>, movedStrokes: List<InkStroke>
-    ) {
-        val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-        val pdPage = pdDoc.getPage(pageIndex)
-        val origNames = originalStrokes.map { "ink-${it.id}" }.toSet()
-        val annotations = pdPage.annotations
-        val toRemove = annotations.filter { it.annotationName in origNames }
-        annotations.removeAll(toRemove)
-        for (s in movedStrokes) addInkAnnotationToDoc(pdDoc, pageIndex, s)
-        pdDoc.saveWithBackup(app, uri)
-        pdDoc.close()
-        pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
-        renderer = PdfRenderer(pfd!!)
+    private fun flushPendingInkStrokes() {
+        strokeSaveJob?.cancel()
+        strokeSaveJob = null
+        val toSave = pendingInkStrokes.mapValues { it.value.toList() }
+        pendingInkStrokes.clear()
+        if (toSave.isEmpty()) return
+        launchSave {
+            val uri = docUri ?: return@launchSave
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                // Filter out strokes that were erased from the overlay before we got the lock
+                val filtered = toSave.mapValues { (pageIndex, strokes) ->
+                    val current = _completedInkStrokes.value[pageIndex].orEmpty()
+                    strokes.filter { s -> current.any { it.id == s.id } }
+                }.filter { it.value.isNotEmpty() }
+                if (filtered.isEmpty()) return@withLock
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+                writeInkStrokesToPdf(uri, app, filtered)
+            }
+        }
     }
 
     fun moveInkStrokes(pageIndex: Int, originalStrokes: List<InkStroke>, movedStrokes: List<InkStroke>) {
@@ -654,13 +738,58 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             map + (pageIndex to kept + movedStrokes)
         }
         pushUndo(UndoableAction.StrokesMoved(pageIndex, originalStrokes, movedStrokes))
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        // Partition: strokes still pending (not yet in PDF) vs. already in PDF
+        val origIds = originalStrokes.map { it.id }.toSet()
+        val pendingPage = pendingInkStrokes[pageIndex]
+        val pendingMovedIds = if (pendingPage != null)
+            origIds.filter { id -> pendingPage.removeAll { it.id == id } }
+        else emptyList()
+        if (pendingPage != null && pendingPage.isEmpty()) pendingInkStrokes.remove(pageIndex)
+        // Re-add moved versions of the pending strokes into the pending batch
+        val pendingMovedIdSet = pendingMovedIds.toSet()
+        if (pendingMovedIdSet.isNotEmpty()) {
+            val movedPending = movedStrokes.filter { it.id in pendingMovedIdSet }
+            pendingInkStrokes.getOrPut(pageIndex) { mutableListOf() }.addAll(movedPending)
+        }
+        val idsInPdf = origIds - pendingMovedIds.toSet()
+        if (idsInPdf.isEmpty()) {
+            // All moved strokes were pending — no PDF write needed, just re-debounce
+            strokeSaveJob?.cancel()
+            strokeSaveJob = viewModelScope.launch {
+                delay(STROKE_SAVE_DEBOUNCE_MS)
+                flushPendingInkStrokes()
+            }
+            return
+        }
+        // Flush remaining pending strokes + do the move in one PDF write
+        strokeSaveJob?.cancel(); strokeSaveJob = null
+        val remainingPending = pendingInkStrokes.mapValues { it.value.toList() }
+        pendingInkStrokes.clear()
+        val inPdfOriginals = originalStrokes.filter { it.id in idsInPdf }
+        val inPdfMoved = movedStrokes.filter { it.id in idsInPdf }
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
-                moveInkStrokesInPdf(uri, app, pageIndex, originalStrokes, movedStrokes)
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                // Add any remaining pending strokes first
+                remainingPending.forEach { (pi, strokes) ->
+                    val current = _completedInkStrokes.value[pi].orEmpty()
+                    strokes.filter { s -> current.any { it.id == s.id } }
+                        .forEach { s -> addInkAnnotationToDoc(pdDoc, pi, s) }
+                }
+                // Then do the move for in-PDF strokes
+                val pdPage = pdDoc.getPage(pageIndex)
+                val origNames = inPdfOriginals.map { "ink-${it.id}" }.toSet()
+                val annotations = pdPage.annotations
+                annotations.removeAll(annotations.filter { it.annotationName in origNames })
+                for (s in inPdfMoved) addInkAnnotationToDoc(pdDoc, pageIndex, s)
+                pdDoc.saveWithBackup(app, uri)
+                pdDoc.close()
+                pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                renderer = PdfRenderer(pfd!!)
             }
         }
     }
@@ -677,16 +806,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             map + (pageIndex to (map[pageIndex].orEmpty() + stroke))
         }
         pushUndo(UndoableAction.StrokeAdded(pageIndex, stroke))
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
-            val app = getApplication<Application>()
-            renderMutex.withLock {
-                // Abort if stroke was erased from the overlay before we got the lock
-                if (_completedInkStrokes.value[pageIndex]?.none { it.id == strokeId } != false) return@withLock
-                renderer?.close(); pfd?.close()
-                renderer = null; pfd = null
-                writeInkStrokeToPdf(uri, app, pageIndex, stroke)
-            }
+        pendingInkStrokes.getOrPut(pageIndex) { mutableListOf() }.add(stroke)
+        strokeSaveJob?.cancel()
+        strokeSaveJob = viewModelScope.launch {
+            delay(STROKE_SAVE_DEBOUNCE_MS)
+            flushPendingInkStrokes()
         }
     }
 
@@ -694,15 +818,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         _completedInkStrokes.update { map ->
             map + (pageIndex to (map[pageIndex].orEmpty() + stroke))
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
-            val app = getApplication<Application>()
-            renderMutex.withLock {
-                if (_completedInkStrokes.value[pageIndex]?.none { it.id == stroke.id } != false) return@withLock
-                renderer?.close(); pfd?.close()
-                renderer = null; pfd = null
-                writeInkStrokeToPdf(uri, app, pageIndex, stroke)
-            }
+        pendingInkStrokes.getOrPut(pageIndex) { mutableListOf() }.add(stroke)
+        strokeSaveJob?.cancel()
+        strokeSaveJob = viewModelScope.launch {
+            delay(STROKE_SAVE_DEBOUNCE_MS)
+            flushPendingInkStrokes()
         }
     }
 
@@ -714,19 +834,42 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             val remaining = map[pageIndex].orEmpty().filter { it.id !in strokeIds }
             if (remaining.isEmpty()) map - pageIndex else map + (pageIndex to remaining)
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        // Partition: strokes still pending (not yet written to PDF) vs. already in PDF
+        val strokeIdSet = strokeIds.toSet()
+        val pendingPage = pendingInkStrokes[pageIndex]
+        val pendingErased = if (pendingPage != null)
+            strokeIdSet.filter { id -> pendingPage.removeAll { it.id == id } }
+        else emptyList()
+        if (pendingPage != null && pendingPage.isEmpty()) pendingInkStrokes.remove(pageIndex)
+        val idsInPdf = strokeIdSet - pendingErased.toSet()
+
+        if (idsInPdf.isEmpty()) {
+            // All erased strokes were pending — no PDF write needed
+            return
+        }
+        // Flush any remaining pending strokes, then erase in a single PDF write
+        strokeSaveJob?.cancel(); strokeSaveJob = null
+        val remainingPending = pendingInkStrokes.mapValues { it.value.toList() }
+        pendingInkStrokes.clear()
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
                 val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                // Add any remaining pending strokes first
+                remainingPending.forEach { (pi, strokes) ->
+                    val current = _completedInkStrokes.value[pi].orEmpty()
+                    strokes.filter { s -> current.any { it.id == s.id } }
+                        .forEach { s -> addInkAnnotationToDoc(pdDoc, pi, s) }
+                }
+                // Then erase the strokes already in the PDF
                 val pdPage = pdDoc.getPage(pageIndex)
-                val namesToRemove = strokeIds.map { "ink-$it" }.toSet()
+                val namesToRemove = idsInPdf.map { "ink-$it" }.toSet()
                 val annotations = pdPage.annotations
-                val toRemove = annotations.filter { it.annotationName in namesToRemove }
-                annotations.removeAll(toRemove)
+                annotations.removeAll(annotations.filter { it.annotationName in namesToRemove })
 
                 pdDoc.saveWithBackup(app, uri)
                 pdDoc.close()
@@ -738,8 +881,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun deleteHighlight(highlight: PdfHighlight) {
         pushUndo(UndoableAction.HighlightDeleted(highlight.pageIndex, highlight.bounds, highlight.note))
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        flushPendingInkStrokes()
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
@@ -769,8 +913,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             newPages[pageIndex] = page.copy(highlights = page.highlights + optimisticHighlight)
             state.copy(pages = newPages)
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        flushPendingInkStrokes()
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
@@ -830,8 +975,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             oldNote = highlight.note,
             newNote = note.ifBlank { null }
         ))
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        flushPendingInkStrokes()
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
@@ -1029,13 +1175,18 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
                 this@PdfViewerViewModel.docUri = uri
 
-                val newPfd = app.contentResolver.openFileDescriptor(uri, "r")
-                    ?: run {
-                        withContext(Dispatchers.Main) {
-                            _uiState.value = PdfViewerUiState.Error("Could not open file")
+                // Hold the file write lock while opening the file to prevent reading a
+                // partially-written file if a background save is in progress.
+                val (newPfd, pdDoc) = fileWriteLockFor(uri).withLock {
+                    val pfd = app.contentResolver.openFileDescriptor(uri, "r")
+                        ?: run {
+                            withContext(Dispatchers.Main) {
+                                _uiState.value = PdfViewerUiState.Error("Could not open file")
+                            }
+                            return@withLock null
                         }
-                        return@withContext
-                    }
+                    pfd to PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                } ?: return@withContext
 
                 pfd?.close()
                 renderer?.close()
@@ -1043,12 +1194,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val newRenderer = PdfRenderer(newPfd)
                 renderer = newRenderer
                 currentRenderScale = 2f
-
-                // Start PDFBox load while PdfRenderer was being set up
-                val pdDocDeferred = async { PDDocument.load(app.contentResolver.openInputStream(uri)!!) }
-
-                // Extract metadata first so TopAppBar shows title/author before bitmaps arrive
-                val pdDoc = pdDocDeferred.await()
                 val title  = pdDoc.documentInformation?.title?.takeIf  { it.isNotBlank() } ?: ""
                 val author = pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() } ?: ""
                 withContext(Dispatchers.Main) {
@@ -1138,8 +1283,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             oldAuthor = _displayAuthor.value,
             newAuthor = newAuthor
         ))
-        viewModelScope.launch(Dispatchers.IO) {
-            val uri = docUri ?: return@launch
+        flushPendingInkStrokes()
+        launchSave {
+            val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
@@ -1157,7 +1303,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 pfd = newPfd
                 renderer = PdfRenderer(newPfd)
             }
-            val state = _uiState.value as? PdfViewerUiState.Ready ?: return@launch
+            val state = _uiState.value as? PdfViewerUiState.Ready ?: return@launchSave
             withContext(Dispatchers.Main) {
                 _displayTitle.value = newTitle
                 _displayAuthor.value = newAuthor
@@ -1182,8 +1328,22 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     override fun onCleared() {
+        flushPendingInkStrokes()
         super.onCleared()
-        renderer?.close()
-        pfd?.close()
+        saveScope.launch {
+            renderMutex.withLock {
+                renderer?.close()
+                pfd?.close()
+                renderer = null
+                pfd = null
+            }
+            saveScope.cancel()
+        }
+    }
+
+    companion object {
+        private val fileWriteLocks = ConcurrentHashMap<String, Mutex>()
+        fun fileWriteLockFor(uri: Uri): Mutex =
+            fileWriteLocks.getOrPut(uri.toString()) { Mutex() }
     }
 }
