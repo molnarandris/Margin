@@ -18,6 +18,8 @@ import com.tom_roush.pdfbox.cos.COSNumber
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
@@ -1176,7 +1178,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             while (current != null) {
                 val title = current.title.orEmpty().trim()
                 val dest = try { current.destination } catch (e: Exception) { null }
-                val pageIndex = (dest as? PDPageDestination)?.retrievePageNumber() ?: -1
+                    ?: try { (current.action as? PDActionGoTo)?.destination } catch (e: Exception) { null }
+                val resolvedDest: PDPageDestination? = when (dest) {
+                    is PDPageDestination -> dest
+                    is PDNamedDestination -> try {
+                        pdDoc.documentCatalog.findNamedDestinationPage(dest)
+                    } catch (e: Exception) { null }
+                    else -> null
+                }
+                val pageIndex = resolvedDest?.retrievePageNumber() ?: -1
                 if (title.isNotEmpty() && pageIndex >= 0) {
                     result.add(OutlineItem(title, pageIndex, level))
                 }
