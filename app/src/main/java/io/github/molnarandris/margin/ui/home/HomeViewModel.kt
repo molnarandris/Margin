@@ -73,6 +73,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val deleted = pdfRepo.deletePdf(pdf.uri)
             if (deleted) {
+                prefsRepo.clearPdfData(pdf.uri)
                 _uiState.value = state.copy(pdfs = state.pdfs - pdf)
             }
         }

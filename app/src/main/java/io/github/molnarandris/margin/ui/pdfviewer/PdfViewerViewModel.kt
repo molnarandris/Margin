@@ -45,6 +45,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import android.content.Context
+import io.github.molnarandris.margin.data.PreferencesRepository
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -224,8 +225,28 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _penThickness = MutableStateFlow(StrokeThickness.MEDIUM)
     val penThickness: StateFlow<StrokeThickness> = _penThickness.asStateFlow()
 
-    fun setPenColor(color: StrokeColor) { _penColor.value = color }
-    fun setPenThickness(t: StrokeThickness) { _penThickness.value = t }
+    private val prefsRepo = PreferencesRepository(application)
+
+    init {
+        viewModelScope.launch {
+            prefsRepo.getPenColor()
+                ?.let { name -> StrokeColor.entries.firstOrNull { it.name == name } }
+                ?.let { _penColor.value = it }
+            prefsRepo.getPenThickness()
+                ?.let { name -> StrokeThickness.entries.firstOrNull { it.name == name } }
+                ?.let { _penThickness.value = it }
+        }
+    }
+
+    fun setPenColor(color: StrokeColor) {
+        _penColor.value = color
+        viewModelScope.launch { prefsRepo.savePenColor(color.name) }
+    }
+
+    fun setPenThickness(t: StrokeThickness) {
+        _penThickness.value = t
+        viewModelScope.launch { prefsRepo.savePenThickness(t.name) }
+    }
 
     private val undoStack = ArrayDeque<UndoableAction>()  // max 10
     private val redoStack = ArrayDeque<UndoableAction>()
@@ -347,6 +368,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun onVisiblePageChanged(index: Int) {
         firstVisiblePageIndex = index
+        val uri = docUri ?: return
+        viewModelScope.launch { prefsRepo.saveLastPage(uri, index) }
     }
 
     fun loadPdf(dirUri: Uri, docId: String) {
@@ -364,7 +387,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     } ?: ""
             }
             loadedFileName = fileName
-            renderPages(dirUri, docId, fileName)
+            val lastPage = prefsRepo.getLastPage(uri) ?: 0
+            renderPages(dirUri, docId, fileName, lastPage)
         }
     }
 
@@ -1166,7 +1190,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private suspend fun renderPages(dirUri: Uri, docId: String, fileName: String): Unit =
+    private suspend fun renderPages(dirUri: Uri, docId: String, fileName: String, initialPage: Int = 0): Unit =
         withContext(Dispatchers.IO) {
             try {
                 val app = getApplication<Application>()
@@ -1228,6 +1252,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 withContext(Dispatchers.Main) {
                     _uiState.value = PdfViewerUiState.Ready(pages, title, author)
+                    if (initialPage > 0) _pendingScrollToPage.value = initialPage
                 }
 
                 val pageCount = pages.size

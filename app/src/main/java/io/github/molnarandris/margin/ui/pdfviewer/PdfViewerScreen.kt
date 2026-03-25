@@ -173,7 +173,7 @@ fun PdfViewerScreen(
     var authorEditText by remember { mutableStateOf("") }
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
     var noteDialogText   by remember { mutableStateOf("") }
-    var currentPage by remember { mutableStateOf(0) }
+    var currentPage by remember { mutableStateOf(viewModel.firstVisiblePageIndex) }
 
     var topBarVisible by remember { mutableStateOf(true) }
     val view = LocalView.current
