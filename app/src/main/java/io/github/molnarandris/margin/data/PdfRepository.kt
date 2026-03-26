@@ -13,6 +13,11 @@ import java.io.File
 
 data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "")
 
+sealed class FileSystemItem {
+    data class PdfItem(val pdf: PdfFile) : FileSystemItem()
+    data class DirItem(val uri: Uri, val name: String) : FileSystemItem()
+}
+
 private fun backupFileFor(context: Context, uri: Uri): File =
     File(context.filesDir, "backup_${uri.toString().hashCode()}.pdf")
 
@@ -27,32 +32,50 @@ private fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
 
 class PdfRepository(private val context: Context) {
 
-    suspend fun listPdfs(directoryUri: Uri): List<PdfFile> = withContext(Dispatchers.IO) {
-        val dir = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext emptyList()
-        dir.listFiles()
-            .filter { it.isFile && it.type == "application/pdf" }
-            .map { file ->
-                val name = file.name ?: "Untitled.pdf"
-                val (title, author) = try {
-                    context.contentResolver.openInputStream(file.uri)?.use { stream ->
-                        val doc = PDDocument.load(stream)
-                        val info = doc.documentInformation
-                        val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
-                        val a = info?.author?.takeIf { it.isNotBlank() } ?: ""
-                        doc.close()
-                        t to a
-                    } ?: ("" to "")
-                } catch (e: Exception) {
-                    "" to ""
-                }
-                PdfFile(uri = file.uri, name = name, title = title, author = author)
-            }
-            .sortedBy { it.name }
+    private fun navigateToDir(rootUri: Uri, pathFromRoot: List<String>): DocumentFile? {
+        var dir = DocumentFile.fromTreeUri(context, rootUri) ?: return null
+        for (segment in pathFromRoot) {
+            dir = dir.findFile(segment)?.takeIf { it.isDirectory } ?: return null
+        }
+        return dir
     }
 
-    suspend fun importPdf(sourceUri: Uri, directoryUri: Uri): Boolean = withContext(Dispatchers.IO) {
+    suspend fun listContents(rootUri: Uri, pathFromRoot: List<String>): List<FileSystemItem> = withContext(Dispatchers.IO) {
+        val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext emptyList()
+        val dirs = mutableListOf<FileSystemItem.DirItem>()
+        val pdfs = mutableListOf<FileSystemItem.PdfItem>()
+        for (file in dir.listFiles()) {
+            when {
+                file.isDirectory -> dirs.add(FileSystemItem.DirItem(file.uri, file.name ?: "Untitled"))
+                file.isFile && file.type == "application/pdf" -> {
+                    val name = file.name ?: "Untitled.pdf"
+                    val (title, author) = try {
+                        context.contentResolver.openInputStream(file.uri)?.use { stream ->
+                            val doc = PDDocument.load(stream)
+                            val info = doc.documentInformation
+                            val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
+                            val a = info?.author?.takeIf { it.isNotBlank() } ?: ""
+                            doc.close()
+                            t to a
+                        } ?: ("" to "")
+                    } catch (e: Exception) {
+                        "" to ""
+                    }
+                    pdfs.add(FileSystemItem.PdfItem(PdfFile(uri = file.uri, name = name, title = title, author = author)))
+                }
+            }
+        }
+        dirs.sortedBy { it.name } + pdfs.sortedBy { it.pdf.name }
+    }
+
+    suspend fun createDirectory(rootUri: Uri, pathFromRoot: List<String>, name: String): Boolean = withContext(Dispatchers.IO) {
+        val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext false
+        dir.createDirectory(name) != null
+    }
+
+    suspend fun importPdf(sourceUri: Uri, rootUri: Uri, pathFromRoot: List<String>): Boolean = withContext(Dispatchers.IO) {
         try {
-            val dir = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext false
+            val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext false
             val name = resolveFileName(sourceUri)
             val destFile = dir.createFile("application/pdf", name) ?: return@withContext false
             context.contentResolver.openInputStream(sourceUri)?.use { input ->
@@ -86,9 +109,9 @@ class PdfRepository(private val context: Context) {
             }
         }
 
-    suspend fun createBlankPdf(directoryUri: Uri): Uri? = withContext(Dispatchers.IO) {
+    suspend fun createBlankPdf(rootUri: Uri, pathFromRoot: List<String>): Uri? = withContext(Dispatchers.IO) {
         try {
-            val dir = DocumentFile.fromTreeUri(context, directoryUri) ?: return@withContext null
+            val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext null
             val destFile = dir.createFile("application/pdf", "Note") ?: return@withContext null
             val doc = PDDocument()
             doc.addPage(PDPage(PDRectangle.A4))

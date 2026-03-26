@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.github.molnarandris.margin.data.FileSystemItem
 import io.github.molnarandris.margin.data.PdfFile
 import io.github.molnarandris.margin.data.PdfRepository
 import io.github.molnarandris.margin.data.PreferencesRepository
@@ -19,7 +20,14 @@ import kotlinx.coroutines.launch
 sealed class HomeUiState {
     object Loading : HomeUiState()
     object NoDirectory : HomeUiState()
-    data class Ready(val directoryUri: Uri, val pdfs: List<PdfFile>) : HomeUiState()
+    data class Ready(
+        val rootUri: Uri,
+        val currentPath: List<String>,
+        val items: List<FileSystemItem>
+    ) : HomeUiState() {
+        val isAtRoot get() = currentPath.isEmpty()
+        val currentDirName get() = currentPath.lastOrNull() ?: "Margin"
+    }
 }
 
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
@@ -40,8 +48,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     _uiState.value = HomeUiState.NoDirectory
                 } else {
                     val uri = Uri.parse(uriString)
-                    val pdfs = pdfRepo.listPdfs(uri)
-                    _uiState.value = HomeUiState.Ready(uri, pdfs)
+                    val items = pdfRepo.listContents(uri, emptyList())
+                    _uiState.value = HomeUiState.Ready(uri, emptyList(), items)
                 }
             }
         }
@@ -60,21 +68,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun importPdf(sourceUri: Uri) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val success = pdfRepo.importPdf(sourceUri, state.directoryUri)
+            val success = pdfRepo.importPdf(sourceUri, state.rootUri, state.currentPath)
             if (success) {
-                val pdfs = pdfRepo.listPdfs(state.directoryUri)
-                _uiState.value = state.copy(pdfs = pdfs)
+                val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+                _uiState.value = state.copy(items = items)
             }
         }
     }
 
-    fun deletePdf(pdf: PdfFile) {
+    fun deleteItem(uri: Uri) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val deleted = pdfRepo.deletePdf(pdf.uri)
+            val deleted = pdfRepo.deletePdf(uri)
             if (deleted) {
-                prefsRepo.clearPdfData(pdf.uri)
-                _uiState.value = state.copy(pdfs = state.pdfs - pdf)
+                prefsRepo.clearPdfData(uri)
+                val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+                _uiState.value = state.copy(items = items)
             }
         }
     }
@@ -84,8 +93,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val updated = pdfRepo.updateMetadata(pdf.uri, title, author)
             if (updated) {
-                val newPdf = pdf.copy(title = title, author = author)
-                _uiState.value = state.copy(pdfs = state.pdfs.map { if (it.uri == pdf.uri) newPdf else it })
+                val newItem = FileSystemItem.PdfItem(pdf.copy(title = title, author = author))
+                _uiState.value = state.copy(items = state.items.map {
+                    if (it is FileSystemItem.PdfItem && it.pdf.uri == pdf.uri) newItem else it
+                })
             }
         }
     }
@@ -93,18 +104,48 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun createNote() {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val uri = pdfRepo.createBlankPdf(state.directoryUri) ?: return@launch
-            val pdfs = pdfRepo.listPdfs(state.directoryUri)
-            _uiState.value = state.copy(pdfs = pdfs)
+            val uri = pdfRepo.createBlankPdf(state.rootUri, state.currentPath) ?: return@launch
+            val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+            _uiState.value = state.copy(items = items)
             _openPdfEvent.emit(uri)
         }
     }
 
-    fun refreshPdfs() {
+    fun refreshContents() {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val pdfs = pdfRepo.listPdfs(state.directoryUri)
-            _uiState.value = state.copy(pdfs = pdfs)
+            val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+            _uiState.value = state.copy(items = items)
+        }
+    }
+
+    fun navigateInto(dirName: String) {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        viewModelScope.launch {
+            val newPath = state.currentPath + dirName
+            val items = pdfRepo.listContents(state.rootUri, newPath)
+            _uiState.value = state.copy(currentPath = newPath, items = items)
+        }
+    }
+
+    fun navigateUp() {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        if (state.isAtRoot) return
+        viewModelScope.launch {
+            val newPath = state.currentPath.dropLast(1)
+            val items = pdfRepo.listContents(state.rootUri, newPath)
+            _uiState.value = state.copy(currentPath = newPath, items = items)
+        }
+    }
+
+    fun createDirectory(name: String) {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        viewModelScope.launch {
+            val success = pdfRepo.createDirectory(state.rootUri, state.currentPath, name)
+            if (success) {
+                val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+                _uiState.value = state.copy(items = items)
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 package io.github.molnarandris.margin.ui.home
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -23,8 +24,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -61,6 +65,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.molnarandris.margin.data.FileSystemItem
 import io.github.molnarandris.margin.data.PdfFile
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,14 +80,14 @@ fun HomeScreen(
     LaunchedEffect(Unit) {
         viewModel.openPdfEvent.collect { docUri ->
             val ready = viewModel.uiState.value as? HomeUiState.Ready ?: return@collect
-            onOpenPdf(ready.directoryUri, docUri)
+            onOpenPdf(ready.rootUri, docUri)
         }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshPdfs()
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshContents()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -94,11 +99,40 @@ fun HomeScreen(
         if (uri != null) viewModel.importPdf(uri)
     }
 
+    val readyState = uiState as? HomeUiState.Ready
+    BackHandler(enabled = readyState != null && !readyState.isAtRoot) {
+        viewModel.navigateUp()
+    }
+
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+
+    if (showCreateFolderDialog) {
+        CreateFolderDialog(
+            onConfirm = { name ->
+                viewModel.createDirectory(name)
+                showCreateFolderDialog = false
+            },
+            onDismiss = { showCreateFolderDialog = false }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Margin") },
+                title = { Text(readyState?.currentDirName ?: "Margin") },
+                navigationIcon = {
+                    if (readyState != null && !readyState.isAtRoot) {
+                        IconButton(onClick = { viewModel.navigateUp() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    }
+                },
                 actions = {
+                    if (readyState != null) {
+                        IconButton(onClick = { showCreateFolderDialog = true }) {
+                            Icon(Icons.Default.CreateNewFolder, contentDescription = "Create folder")
+                        }
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -139,7 +173,7 @@ fun HomeScreen(
             }
 
             is HomeUiState.Ready -> {
-                if (state.pdfs.isEmpty()) {
+                if (state.items.isEmpty()) {
                     Box(
                         modifier = Modifier.fillMaxSize().padding(innerPadding),
                         contentAlignment = Alignment.Center
@@ -147,10 +181,12 @@ fun HomeScreen(
                         Text("No PDFs yet. Tap + to import one.")
                     }
                 } else {
-                    PdfList(
-                        pdfs = state.pdfs,
-                        onPdfClick = { onOpenPdf(state.directoryUri, it.uri) },
-                        onPdfDelete = { viewModel.deletePdf(it) },
+                    ContentList(
+                        items = state.items,
+                        onDirClick = { viewModel.navigateInto(it.name) },
+                        onDirDelete = { viewModel.deleteItem(it.uri) },
+                        onPdfClick = { onOpenPdf(state.rootUri, it.uri) },
+                        onPdfDelete = { viewModel.deleteItem(it.uri) },
                         onPdfMetadataUpdate = { pdf, title, author ->
                             viewModel.updateMetadata(pdf, title, author)
                         },
@@ -160,6 +196,34 @@ fun HomeScreen(
             }
         }
     }
+}
+
+@Composable
+private fun CreateFolderDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New folder") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Folder name") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (name.isNotBlank()) onConfirm(name.trim()) },
+                enabled = name.isNotBlank()
+            ) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable
@@ -195,26 +259,36 @@ private fun SplitFab(onImport: () -> Unit, onNewNote: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PdfList(
-    pdfs: List<PdfFile>,
+private fun ContentList(
+    items: List<FileSystemItem>,
+    onDirClick: (FileSystemItem.DirItem) -> Unit,
+    onDirDelete: (FileSystemItem.DirItem) -> Unit,
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
     onPdfMetadataUpdate: (PdfFile, String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var menuTarget by remember { mutableStateOf<PdfFile?>(null) }
-    var pendingDelete by remember { mutableStateOf<PdfFile?>(null) }
+    var menuTarget by remember { mutableStateOf<FileSystemItem?>(null) }
+    var pendingDelete by remember { mutableStateOf<FileSystemItem?>(null) }
     var editTarget by remember { mutableStateOf<PdfFile?>(null) }
 
-    pendingDelete?.let { pdf ->
+    pendingDelete?.let { item ->
+        val name = when (item) {
+            is FileSystemItem.DirItem -> item.name
+            is FileSystemItem.PdfItem -> item.pdf.name
+        }
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("Delete file?") },
-            text = { Text("\"${pdf.name}\" will be permanently deleted.") },
+            title = { Text("Delete?") },
+            text = { Text("\"$name\" will be permanently deleted.") },
             confirmButton = {
-                TextButton(onClick = { onPdfDelete(pdf); pendingDelete = null }) {
-                    Text("Delete")
-                }
+                TextButton(onClick = {
+                    when (item) {
+                        is FileSystemItem.DirItem -> onDirDelete(item)
+                        is FileSystemItem.PdfItem -> onPdfDelete(item.pdf)
+                    }
+                    pendingDelete = null
+                }) { Text("Delete") }
             },
             dismissButton = {
                 TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
@@ -259,35 +333,69 @@ private fun PdfList(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
-        items(pdfs, key = { it.uri.toString() }) { pdf ->
-            val meta = listOfNotNull(
-                pdf.title.takeIf { it.isNotBlank() },
-                pdf.author.takeIf { it.isNotBlank() }
-            ).joinToString(" — ")
+        items(items, key = { item ->
+            when (item) {
+                is FileSystemItem.DirItem -> "dir:${item.uri}"
+                is FileSystemItem.PdfItem -> "pdf:${item.pdf.uri}"
+            }
+        }) { item ->
             Box {
-                ListItem(
-                    headlineContent = { Text(pdf.name) },
-                    supportingContent = if (meta.isNotBlank()) ({ Text(meta) }) else null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(
-                            onClick = { onPdfClick(pdf) },
-                            onLongClick = { menuTarget = pdf }
+                when (item) {
+                    is FileSystemItem.DirItem -> {
+                        ListItem(
+                            headlineContent = { Text(item.name) },
+                            leadingContent = {
+                                Icon(Icons.Default.Folder, contentDescription = null)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = { onDirClick(item) },
+                                    onLongClick = { menuTarget = item }
+                                )
                         )
-                )
-                DropdownMenu(
-                    expanded = menuTarget?.uri == pdf.uri,
-                    onDismissRequest = { menuTarget = null },
-                    properties = PopupProperties(focusable = true)
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Edit metadata") },
-                        onClick = { editTarget = pdf; menuTarget = null }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete") },
-                        onClick = { pendingDelete = pdf; menuTarget = null }
-                    )
+                        DropdownMenu(
+                            expanded = (menuTarget as? FileSystemItem.DirItem)?.uri == item.uri,
+                            onDismissRequest = { menuTarget = null },
+                            properties = PopupProperties(focusable = true)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Delete") },
+                                onClick = { pendingDelete = item; menuTarget = null }
+                            )
+                        }
+                    }
+                    is FileSystemItem.PdfItem -> {
+                        val pdf = item.pdf
+                        val meta = listOfNotNull(
+                            pdf.title.takeIf { it.isNotBlank() },
+                            pdf.author.takeIf { it.isNotBlank() }
+                        ).joinToString(" — ")
+                        ListItem(
+                            headlineContent = { Text(pdf.name) },
+                            supportingContent = if (meta.isNotBlank()) ({ Text(meta) }) else null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = { onPdfClick(pdf) },
+                                    onLongClick = { menuTarget = item }
+                                )
+                        )
+                        DropdownMenu(
+                            expanded = (menuTarget as? FileSystemItem.PdfItem)?.pdf?.uri == pdf.uri,
+                            onDismissRequest = { menuTarget = null },
+                            properties = PopupProperties(focusable = true)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Edit metadata") },
+                                onClick = { editTarget = pdf; menuTarget = null }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete") },
+                                onClick = { pendingDelete = item; menuTarget = null }
+                            )
+                        }
+                    }
                 }
             }
             HorizontalDivider()
