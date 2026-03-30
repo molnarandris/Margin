@@ -104,10 +104,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun createNote() {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val uri = pdfRepo.createBlankPdf(state.rootUri, state.currentPath) ?: return@launch
+            val uri = pdfRepo.createBlankPdf(state.rootUri) ?: return@launch
+            _openPdfEvent.emit(uri)
             val items = pdfRepo.listContents(state.rootUri, state.currentPath)
             _uiState.value = state.copy(items = items)
-            _openPdfEvent.emit(uri)
         }
     }
 

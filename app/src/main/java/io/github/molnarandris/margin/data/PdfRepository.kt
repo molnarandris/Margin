@@ -10,6 +10,7 @@ import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.time.LocalDateTime
 
 data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "")
 
@@ -36,6 +37,16 @@ class PdfRepository(private val context: Context) {
         var dir = DocumentFile.fromTreeUri(context, rootUri) ?: return null
         for (segment in pathFromRoot) {
             dir = dir.findFile(segment)?.takeIf { it.isDirectory } ?: return null
+        }
+        return dir
+    }
+
+    private fun navigateToDirOrCreate(rootUri: Uri, pathFromRoot: List<String>): DocumentFile? {
+        var dir = DocumentFile.fromTreeUri(context, rootUri) ?: return null
+        for (segment in pathFromRoot) {
+            dir = dir.findFile(segment)?.takeIf { it.isDirectory }
+                ?: dir.createDirectory(segment)
+                ?: return null
         }
         return dir
     }
@@ -109,10 +120,18 @@ class PdfRepository(private val context: Context) {
             }
         }
 
-    suspend fun createBlankPdf(rootUri: Uri, pathFromRoot: List<String>): Uri? = withContext(Dispatchers.IO) {
+    suspend fun createBlankPdf(rootUri: Uri): Uri? = withContext(Dispatchers.IO) {
         try {
-            val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext null
-            val destFile = dir.createFile("application/pdf", "Note") ?: return@withContext null
+            val now = LocalDateTime.now()
+            val yy = "%02d".format(now.year % 100)
+            val mm = "%02d".format(now.monthValue)
+            val dd = "%02d".format(now.dayOfMonth)
+            val hh = "%02d".format(now.hour)
+            val roundedMin = if (now.minute >= 30) "30" else "00"
+            val name = "$yy-$mm-$dd $hh:$roundedMin"
+            val yyyy = "%04d".format(now.year)
+            val dir = navigateToDirOrCreate(rootUri, listOf("Notes", yyyy, mm)) ?: return@withContext null
+            val destFile = dir.createFile("application/pdf", name) ?: return@withContext null
             val doc = PDDocument()
             doc.addPage(PDPage(PDRectangle.A4))
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
