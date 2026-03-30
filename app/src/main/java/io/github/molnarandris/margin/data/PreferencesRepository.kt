@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -19,6 +20,7 @@ class PreferencesRepository(private val context: Context) {
     private val directoryUriKey = stringPreferencesKey("directory_uri")
     private val penColorKey = stringPreferencesKey("pen_color")
     private val penThicknessKey = stringPreferencesKey("pen_thickness")
+    private val keepScreenOnKey = booleanPreferencesKey("keep_screen_on")
     private fun lastPageKey(uri: Uri) = intPreferencesKey("last_page_${uri.toString().hashCode()}")
 
     val directoryUriString: Flow<String?> = context.dataStore.data.map { prefs ->
@@ -51,5 +53,11 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun clearPdfData(uri: Uri) {
         context.dataStore.edit { it.remove(lastPageKey(uri)) }
+    }
+
+    val keepScreenOn: Flow<Boolean> = context.dataStore.data.map { it[keepScreenOnKey] ?: false }
+
+    suspend fun saveKeepScreenOn(value: Boolean) {
+        context.dataStore.edit { it[keepScreenOnKey] = value }
     }
 }

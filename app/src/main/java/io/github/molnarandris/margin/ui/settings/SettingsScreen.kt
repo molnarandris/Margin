@@ -17,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -43,6 +44,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         .map { it?.let { Uri.parse(it) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val keepScreenOn: StateFlow<Boolean> = prefsRepo.keepScreenOn
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     fun onDirectorySelected(uri: Uri) {
         getApplication<Application>().contentResolver.takePersistableUriPermission(
             uri,
@@ -51,6 +55,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             prefsRepo.saveDirectoryUri(uri.toString())
         }
+    }
+
+    fun setKeepScreenOn(value: Boolean) {
+        viewModelScope.launch { prefsRepo.saveKeepScreenOn(value) }
     }
 }
 
@@ -62,6 +70,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val directoryUri by viewModel.directoryUri.collectAsState()
+    val keepScreenOn by viewModel.keepScreenOn.collectAsState()
 
     val directoryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -94,6 +103,18 @@ fun SettingsScreen(
                 headlineContent = { Text("PDF Directory") },
                 supportingContent = { Text(directoryName) },
                 modifier = Modifier.clickable { directoryPicker.launch(directoryUri) }
+            )
+            HorizontalDivider()
+            ListItem(
+                headlineContent = { Text("Keep screen on") },
+                supportingContent = { Text("Prevent screen from turning off while reading") },
+                trailingContent = {
+                    Switch(
+                        checked = keepScreenOn,
+                        onCheckedChange = { viewModel.setKeepScreenOn(it) }
+                    )
+                },
+                modifier = Modifier.clickable { viewModel.setKeepScreenOn(!keepScreenOn) }
             )
             HorizontalDivider()
         }
