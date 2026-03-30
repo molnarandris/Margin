@@ -440,10 +440,6 @@ fun PdfViewerScreen(
                             }
                         }
                         Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                        Spacer(Modifier.width(6.dp))
-                        InsertPageButton(before = false, onClick = { viewModel.insertPage(currentPage) })
-                        InsertPageButton(before = true, onClick = { viewModel.insertPage(currentPage + 1) })
-                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
                         IconButton(onClick = { isSearchVisible = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
@@ -1435,35 +1431,23 @@ private fun PageContent(
                         colors = CardDefaults.cardColors(containerColor = Color.White)
                     ) {
                         Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                IconButton(onClick = {
-                                    showPageContextMenu = false
-                                    onDeletePage()
-                                }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete page")
-                                }
-                                Text("Delete", style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.padding(bottom = 4.dp))
+                            IconButton(onClick = {
+                                showPageContextMenu = false
+                                onDeletePage()
+                            }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete page")
                             }
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                IconButton(onClick = {
-                                    showPageContextMenu = false
-                                    onInsertPageBefore()
-                                }) {
-                                    InsertPageIcon(before = true)
-                                }
-                                Text("Add before", style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.padding(bottom = 4.dp))
+                            IconButton(onClick = {
+                                showPageContextMenu = false
+                                onInsertPageBefore()
+                            }) {
+                                InsertPageIcon(before = true)
                             }
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                IconButton(onClick = {
-                                    showPageContextMenu = false
-                                    onInsertPageAfter()
-                                }) {
-                                    InsertPageIcon(before = false)
-                                }
-                                Text("Add after", style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.padding(bottom = 4.dp))
+                            IconButton(onClick = {
+                                showPageContextMenu = false
+                                onInsertPageAfter()
+                            }) {
+                                InsertPageIcon(before = false)
                             }
                         }
                     }
@@ -1498,16 +1482,6 @@ private fun InsertPageIcon(before: Boolean) {
         val arm = rectW * 0.25f
         drawLine(color = color, start = Offset(cx - arm, cy), end = Offset(cx + arm, cy), strokeWidth = 1.5.dp.toPx())
         drawLine(color = color, start = Offset(cx, cy - arm), end = Offset(cx, cy + arm), strokeWidth = 1.5.dp.toPx())
-    }
-}
-
-@Composable
-private fun InsertPageButton(before: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier.size(width = 36.dp, height = 32.dp).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        InsertPageIcon(before = before)
     }
 }
 
