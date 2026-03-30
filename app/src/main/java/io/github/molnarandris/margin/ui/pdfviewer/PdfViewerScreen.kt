@@ -58,7 +58,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -114,9 +113,15 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.github.molnarandris.margin.data.PreferencesRepository
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.material3.Surface
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
@@ -178,6 +183,13 @@ fun PdfViewerScreen(
     var topBarVisible by remember { mutableStateOf(true) }
     val view = LocalView.current
     val gestureZonePx = remember { 32 * view.resources.displayMetrics.density }
+
+    val context = LocalContext.current
+    val keepScreenOn by PreferencesRepository(context).keepScreenOn.collectAsState(initial = false)
+    DisposableEffect(keepScreenOn) {
+        view.keepScreenOn = keepScreenOn
+        onDispose { view.keepScreenOn = false }
+    }
 
     LaunchedEffect(searchQuery) {
         viewModel.search(searchQuery)
@@ -320,7 +332,7 @@ fun PdfViewerScreen(
 
     Scaffold(
         containerColor = Color(0xFFE0E0E0),
-        topBar = { if (topBarVisible) Column {
+        topBar = { if (topBarVisible) {
             val density = LocalDensity.current
             val defaultInsets = TopAppBarDefaults.windowInsets
             val reducedInsets = WindowInsets(
@@ -400,6 +412,31 @@ fun PdfViewerScreen(
                             Icon(Icons.Default.Close, contentDescription = "Close search")
                         }
                     } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(-8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { viewModel.undo() }, enabled = canUndo) {
+                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                            }
+                            IconButton(onClick = { viewModel.redo() }, enabled = canRedo) {
+                                Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                            }
+                        }
+                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            StrokeThickness.entries.forEach { t ->
+                                ThicknessButton(t, t == penThickness) { viewModel.setPenThickness(t) }
+                            }
+                        }
+                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                        Row(horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
+                            StrokeColor.entries.forEach { c ->
+                                ColorButton(c, c == penColor) { viewModel.setPenColor(c) }
+                            }
+                        }
+                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                        Spacer(Modifier.width(6.dp))
+                        InsertPageButton(before = false, onClick = { viewModel.insertPage(currentPage) })
+                        InsertPageButton(before = true, onClick = { viewModel.insertPage(currentPage + 1) })
+                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
                         IconButton(onClick = { isSearchVisible = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
@@ -410,18 +447,6 @@ fun PdfViewerScreen(
                         }
                     }
                 }
-            )
-            PenToolbar(
-                selectedColor = penColor,
-                selectedThickness = penThickness,
-                onColorSelected = { viewModel.setPenColor(it) },
-                onThicknessSelected = { viewModel.setPenThickness(it) },
-                onInsertBefore = { viewModel.insertPage(currentPage) },
-                onInsertAfter = { viewModel.insertPage(currentPage + 1) },
-                canUndo = canUndo,
-                canRedo = canRedo,
-                onUndo = { viewModel.undo() },
-                onRedo = { viewModel.redo() }
             )
         } },
     ) { innerPadding ->
@@ -473,7 +498,10 @@ fun PdfViewerScreen(
                 var viewportHeightPx by remember { mutableFloatStateOf(0f) }
                 var offsetY by remember { mutableFloatStateOf(0f) }
                 val currentSelectionRef = rememberUpdatedState(textSelection)
+                val pagesRef = rememberUpdatedState(state.pages)
                 val coroutineScope = rememberCoroutineScope()
+                var showLastPageToast by remember { mutableStateOf(false) }
+                var toastJob by remember { mutableStateOf<Job?>(null) }
                 val context = LocalContext.current
                 val clipboardManager = LocalClipboardManager.current
 
@@ -564,7 +592,7 @@ fun PdfViewerScreen(
                                 var totalDx = 0f
                                 do {
                                     val event = awaitPointerEvent(PointerEventPass.Initial)
-                                    val pg = state.pages.getOrNull(currentPage)
+                                    val pg = pagesRef.value.getOrNull(currentPage)
                                     if (event.changes.count { it.pressed } >= 2) {
                                         if (wasMultiTouch) {
                                             val zoomChange = event.calculateZoom()
@@ -663,13 +691,30 @@ fun PdfViewerScreen(
                                         val pageH = (screenWidthPx * scale - 2 * marginPx) * pg.nativeHeight / pg.nativeWidth
                                         return ((pageH - viewportHeightPx) / 2f).coerceAtLeast(0f)
                                     }
-                                    if (totalDx < -threshold && currentPage < state.pages.size - 1) {
-                                        currentPage++
-                                        val pg = state.pages.getOrNull(currentPage)
-                                        offsetY = if (pg != null) -maxOffsetYForPage(pg) else 0f
+                                    if (totalDx < -threshold) {
+                                        if (currentPage < pagesRef.value.size - 1) {
+                                            currentPage++
+                                            val pg = pagesRef.value.getOrNull(currentPage)
+                                            offsetY = if (pg != null) -maxOffsetYForPage(pg) else 0f
+                                            toastJob?.cancel()
+                                            showLastPageToast = false
+                                        } else {
+                                            if (showLastPageToast) {
+                                                toastJob?.cancel()
+                                                showLastPageToast = false
+                                                viewModel.insertPage(currentPage + 1)
+                                            } else {
+                                                showLastPageToast = true
+                                                toastJob?.cancel()
+                                                toastJob = coroutineScope.launch {
+                                                    delay(600)
+                                                    showLastPageToast = false
+                                                }
+                                            }
+                                        }
                                     } else if (totalDx > threshold && currentPage > 0) {
                                         currentPage--
-                                        val pg = state.pages.getOrNull(currentPage)
+                                        val pg = pagesRef.value.getOrNull(currentPage)
                                         offsetY = if (pg != null) maxOffsetYForPage(pg) else 0f
                                     }
                                 }
@@ -773,6 +818,27 @@ fun PdfViewerScreen(
                                 groupIntoLines = ::groupIntoLines,
                                 charsFrom = ::charsFrom
                             )
+                        }
+                        AnimatedVisibility(
+                            visible = showLastPageToast,
+                            enter = fadeIn(),
+                            exit = fadeOut(),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 80.dp)
+                        ) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.inverseSurface,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            ) {
+                                Text(
+                                    text = "Last page. Swipe again to add a new one.",
+                                    color = MaterialTheme.colorScheme.inverseOnSurface,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1319,46 +1385,6 @@ private fun PageContent(
     }
 }
 
-@Composable
-private fun PenToolbar(
-    selectedColor: StrokeColor, selectedThickness: StrokeThickness,
-    onColorSelected: (StrokeColor) -> Unit, onThicknessSelected: (StrokeThickness) -> Unit,
-    onInsertBefore: () -> Unit, onInsertAfter: () -> Unit,
-    canUndo: Boolean, canRedo: Boolean,
-    onUndo: () -> Unit, onRedo: () -> Unit
-) {
-    Surface(tonalElevation = 0.dp, shadowElevation = 4.dp) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onUndo, enabled = canUndo) {
-                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
-                }
-                IconButton(onClick = onRedo, enabled = canRedo) {
-                    Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
-                }
-            }
-            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                StrokeThickness.entries.forEach { t ->
-                    ThicknessButton(t, t == selectedThickness) { onThicknessSelected(t) }
-                }
-            }
-            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                StrokeColor.entries.forEach { c ->
-                    ColorButton(c, c == selectedColor) { onColorSelected(c) }
-                }
-            }
-            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            InsertPageButton(before = false, onClick = onInsertBefore)
-            InsertPageButton(before = true, onClick = onInsertAfter)
-        }
-    }
-}
 
 @Composable
 private fun InsertPageButton(before: Boolean, onClick: () -> Unit) {
