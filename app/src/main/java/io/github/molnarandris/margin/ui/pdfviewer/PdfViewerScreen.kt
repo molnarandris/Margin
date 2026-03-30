@@ -38,12 +38,16 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -181,6 +185,8 @@ fun PdfViewerScreen(
     var currentPage by remember { mutableStateOf(viewModel.firstVisiblePageIndex) }
 
     var topBarVisible by remember { mutableStateOf(true) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val outerScope = rememberCoroutineScope()
     val view = LocalView.current
     val gestureZonePx = remember { 32 * view.resources.displayMetrics.density }
 
@@ -332,6 +338,7 @@ fun PdfViewerScreen(
 
     Scaffold(
         containerColor = Color(0xFFE0E0E0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = { if (topBarVisible) {
             val density = LocalDensity.current
             val defaultInsets = TopAppBarDefaults.windowInsets
@@ -816,7 +823,22 @@ fun PdfViewerScreen(
                                     }
                                 },
                                 groupIntoLines = ::groupIntoLines,
-                                charsFrom = ::charsFrom
+                                charsFrom = ::charsFrom,
+                                onDeletePage = {
+                                    val deletedPage = currentPage
+                                    viewModel.deletePage(deletedPage)
+                                    if (deletedPage >= state.pages.size - 1) {
+                                        currentPage = (state.pages.size - 2).coerceAtLeast(0)
+                                    }
+                                    outerScope.launch {
+                                        val dismissJob = launch { delay(1500); snackbarHostState.currentSnackbarData?.dismiss() }
+                                        val result = snackbarHostState.showSnackbar("Page deleted", actionLabel = "Undo")
+                                        dismissJob.cancel()
+                                        if (result == SnackbarResult.ActionPerformed) viewModel.cancelDelete()
+                                    }
+                                },
+                                onInsertPageBefore = { viewModel.insertPage(currentPage) },
+                                onInsertPageAfter = { viewModel.insertPage(currentPage + 1) }
                             )
                         }
                         AnimatedVisibility(
@@ -879,10 +901,16 @@ private fun PageContent(
     inkStrokeSelection: InkStrokeSelection?,
     onStrokeSelectionChanged: (InkStrokeSelection?) -> Unit,
     onSelectionDragDelta: (Offset) -> Unit,
-    onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit
+    onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit,
+    onDeletePage: () -> Unit,
+    onInsertPageBefore: () -> Unit,
+    onInsertPageAfter: () -> Unit
 ) {
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
     var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
+    var showPageContextMenu by remember { mutableStateOf(false) }
+    var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
+    var contextMenuSize by remember { mutableStateOf(IntSize.Zero) }
     val completedInkStrokesRef = rememberUpdatedState(completedInkStrokes)
     val inkStrokeSelectionRef = rememberUpdatedState(inkStrokeSelection)
     val indexRef = rememberUpdatedState(index)
@@ -1014,6 +1042,10 @@ private fun PageContent(
                     detectTapGestures(
                         onDoubleTap = { onBarsVisibleToggle() },
                         onTap = { tapOffset ->
+                            if (showPageContextMenu) {
+                                showPageContextMenu = false
+                                return@detectTapGestures
+                            }
                             if (currentSelectionRef.value != null) {
                                 onTextSelectionChanged(null)
                                 return@detectTapGestures
@@ -1070,6 +1102,9 @@ private fun PageContent(
                             }
                             if (hitWord != null) {
                                 onTextSelectionChanged(PageTextSelection(index, hitWord.chars))
+                            } else {
+                                contextMenuOffset = longPressOffset
+                                showPageContextMenu = true
                             }
                         }
                     )
@@ -1382,58 +1417,97 @@ private fun PageContent(
                 }
             }
         }
+        if (showPageContextMenu) {
+            with(density) {
+                val gapPx = 8.dp.roundToPx()
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            val menuX = (contextMenuOffset.x - contextMenuSize.width / 2f).roundToInt()
+                                .coerceIn(0, (pageSize.width - contextMenuSize.width).coerceAtLeast(0))
+                            val menuY = (contextMenuOffset.y - gapPx - contextMenuSize.height).roundToInt().coerceAtLeast(0)
+                            IntOffset(menuX, menuY)
+                        }
+                        .onSizeChanged { contextMenuSize = it }
+                ) {
+                    Card(
+                        elevation = CardDefaults.cardElevation(4.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                IconButton(onClick = {
+                                    showPageContextMenu = false
+                                    onDeletePage()
+                                }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete page")
+                                }
+                                Text("Delete", style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(bottom = 4.dp))
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                IconButton(onClick = {
+                                    showPageContextMenu = false
+                                    onInsertPageBefore()
+                                }) {
+                                    InsertPageIcon(before = true)
+                                }
+                                Text("Add before", style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(bottom = 4.dp))
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                IconButton(onClick = {
+                                    showPageContextMenu = false
+                                    onInsertPageAfter()
+                                }) {
+                                    InsertPageIcon(before = false)
+                                }
+                                Text("Add after", style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(bottom = 4.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 
 @Composable
-private fun InsertPageButton(before: Boolean, onClick: () -> Unit) {
+private fun InsertPageIcon(before: Boolean) {
     val color = MaterialTheme.colorScheme.onSurface
+    Canvas(modifier = Modifier.size(width = 34.dp, height = 26.dp)) {
+        val lineH = size.height
+        val rectW = size.width * 0.48f
+        val rectH = size.height
+        val gap = size.width * 0.08f
+        val lineX: Float
+        val rectLeft: Float
+        if (before) {
+            lineX = 0f
+            rectLeft = gap + 2f
+        } else {
+            rectLeft = 0f
+            lineX = rectLeft + rectW + gap + 2f
+        }
+        drawLine(color = color, start = Offset(lineX, 0f), end = Offset(lineX, lineH), strokeWidth = 2.dp.toPx())
+        drawRect(color = color, topLeft = Offset(rectLeft, 0f), size = Size(rectW, rectH), style = Stroke(width = 1.5.dp.toPx()))
+        val cx = rectLeft + rectW / 2f
+        val cy = rectH / 2f
+        val arm = rectW * 0.25f
+        drawLine(color = color, start = Offset(cx - arm, cy), end = Offset(cx + arm, cy), strokeWidth = 1.5.dp.toPx())
+        drawLine(color = color, start = Offset(cx, cy - arm), end = Offset(cx, cy + arm), strokeWidth = 1.5.dp.toPx())
+    }
+}
+
+@Composable
+private fun InsertPageButton(before: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier.size(width = 36.dp, height = 32.dp).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(width = 34.dp, height = 26.dp)) {
-            val lineH = size.height
-            val rectW = size.width * 0.48f
-            val rectH = size.height
-            val gap = size.width * 0.08f
-            val lineX: Float
-            val rectLeft: Float
-            if (before) {
-                lineX = 0f
-                rectLeft = gap + 2f
-            } else {
-                rectLeft = 0f
-                lineX = rectLeft + rectW + gap + 2f
-            }
-            // Vertical line
-            drawLine(
-                color = color,
-                start = Offset(lineX, 0f),
-                end = Offset(lineX, lineH),
-                strokeWidth = 2.dp.toPx()
-            )
-            // Rectangle outline
-            drawRect(
-                color = color,
-                topLeft = Offset(rectLeft, 0f),
-                size = Size(rectW, rectH),
-                style = Stroke(width = 1.5.dp.toPx())
-            )
-            // Plus sign
-            val cx = rectLeft + rectW / 2f
-            val cy = rectH / 2f
-            val arm = rectW * 0.25f
-            drawLine(color = color,
-                start = Offset(cx - arm, cy),
-                end = Offset(cx + arm, cy),
-                strokeWidth = 1.5.dp.toPx())
-            drawLine(color = color,
-                start = Offset(cx, cy - arm),
-                end = Offset(cx, cy + arm),
-                strokeWidth = 1.5.dp.toPx())
-        }
+        InsertPageIcon(before = before)
     }
 }
 

@@ -356,6 +356,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var strokeSaveJob: Job? = null
     private val STROKE_SAVE_DEBOUNCE_MS = 500L
 
+    private var pendingDeleteJob: Job? = null
+    private var deletedPageSnapshot: Triple<Int, PdfPage, List<InkStroke>>? = null
+
     private var rerenderJob: Job? = null
     private var currentRenderScale = 2f
     private var docUri: Uri? = null
@@ -481,6 +484,70 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderPages(dirUri, docId, loadedFileName)
             }
         }
+    }
+
+    fun deletePage(pageIndex: Int) {
+        val currentState = _uiState.value as? PdfViewerUiState.Ready ?: return
+        if (pageIndex !in currentState.pages.indices) return
+
+        flushPendingInkStrokes()
+
+        // Save snapshot for potential undo
+        val inkStrokes = _completedInkStrokes.value[pageIndex] ?: emptyList()
+        deletedPageSnapshot = Triple(pageIndex, currentState.pages[pageIndex], inkStrokes)
+
+        // Phase 1: Optimistic UI removal
+        val newPages = currentState.pages.toMutableList().also { it.removeAt(pageIndex) }
+        _uiState.value = currentState.copy(pages = newPages)
+        _completedInkStrokes.update { map ->
+            map.entries
+                .filter { it.key != pageIndex }
+                .associate { (idx, strokes) ->
+                    if (idx > pageIndex) idx - 1 to strokes else idx to strokes
+                }
+        }
+
+        // Phase 2: Delayed disk write — cancelled if undo is triggered
+        pendingDeleteJob = saveScope.launch {
+            delay(1100)
+            val uri = docUri ?: return@launch
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+                pdDoc.removePage(pageIndex)
+                pdDoc.saveWithBackup(app, uri)
+                pdDoc.close()
+
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
+            }
+            deletedPageSnapshot = null
+        }
+    }
+
+    fun cancelDelete() {
+        pendingDeleteJob?.cancel()
+        pendingDeleteJob = null
+        val (pageIndex, page, inkStrokes) = deletedPageSnapshot ?: return
+        deletedPageSnapshot = null
+
+        val currentState = _uiState.value as? PdfViewerUiState.Ready ?: return
+        val newPages = currentState.pages.toMutableList().also {
+            it.add(pageIndex.coerceIn(0, it.size), page)
+        }
+        _uiState.value = currentState.copy(pages = newPages)
+        _completedInkStrokes.update { map ->
+            val shifted = map.entries.associate { (idx, strokes) ->
+                if (idx >= pageIndex) idx + 1 to strokes else idx to strokes
+            }.toMutableMap()
+            if (inkStrokes.isNotEmpty()) shifted[pageIndex] = inkStrokes
+            shifted
+        }
+        _pendingScrollToPage.value = pageIndex
     }
 
     fun updateRenderScale(displayScale: Float, visibleIndices: List<Int>) {
