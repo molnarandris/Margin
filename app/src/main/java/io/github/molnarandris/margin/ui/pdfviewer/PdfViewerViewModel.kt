@@ -891,7 +891,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         pageIndex: Int, points: List<Offset>, displayWidth: Int, displayHeight: Int,
         color: StrokeColor = _penColor.value,
         thickness: StrokeThickness = _penThickness.value
-    ) {
+    ): Int {
         val normalized = points.map { Offset(it.x / displayWidth, it.y / displayHeight) }
         val strokeId = nextStrokeId++
         val stroke = InkStroke(strokeId, normalized, color, thickness, roundCap = true)
@@ -905,6 +905,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             delay(STROKE_SAVE_DEBOUNCE_MS)
             flushPendingInkStrokes()
         }
+        return strokeId
     }
 
     private fun addStrokeDirectly(pageIndex: Int, stroke: InkStroke) {

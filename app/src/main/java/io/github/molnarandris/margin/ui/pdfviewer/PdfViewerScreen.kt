@@ -124,11 +124,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.material3.Surface
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
 private data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
@@ -890,7 +892,7 @@ private fun PageContent(
     onTapAnnotatedHighlight: (PdfHighlight) -> Unit,
     onCopy: (String) -> Unit,
     onEraseInkStrokes: (Int, List<Int>) -> Unit,
-    onAddInkAnnotation: (Int, List<Offset>, Int, Int) -> Unit,
+    onAddInkAnnotation: (Int, List<Offset>, Int, Int) -> Int,
     onLinkTap: (LinkTarget, android.graphics.RectF) -> Unit,
     groupIntoLines: (List<TextChar>) -> List<List<TextChar>>,
     charsFrom: (TextChar, TextChar, List<TextChar>) -> List<TextChar>,
@@ -910,6 +912,7 @@ private fun PageContent(
     val completedInkStrokesRef = rememberUpdatedState(completedInkStrokes)
     val inkStrokeSelectionRef = rememberUpdatedState(inkStrokeSelection)
     val indexRef = rememberUpdatedState(index)
+    val pageScope = rememberCoroutineScope()
     Box(modifier = Modifier.pointerInput(page.nativeWidth, page.nativeHeight) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
@@ -971,7 +974,7 @@ private fun PageContent(
                     lassoClosedAt = null
                 }
             }
-            currentInkStroke = null  // Always clear the lasso/stroke visual
+            if (triggerLasso) currentInkStroke = null  // Clear for lasso; ink path clears after async
 
             if (triggerLasso && pageSize != IntSize.Zero) {
                 // ── Phase B: Compute selection ────────────────────────────────
@@ -1004,26 +1007,42 @@ private fun PageContent(
                 return@awaitEachGesture  // Never becomes an ink stroke
             }
 
-            // ── Normal stroke / scribble logic (unchanged) ────────────────────
+            // ── Normal stroke / scribble logic ────────────────────────────────
             if (pageSize != IntSize.Zero) {
-                val normalizedPoints = points.map { Offset(it.x / pageSize.width, it.y / pageSize.height) }
-                val pageStrokes = completedInkStrokesRef.value[currentIndex]
-                val scribble = isScribble(points)
-                if (scribble.isScribble) {
-                    val hull = convexHull(scribble.reversalPoints)
-                    val intersecting = pageStrokes?.filter {
-                        strokeIntersectsScribble(it.points, normalizedPoints) ||
-                        strokeNearScribble(it.points, points, pageSize, 10f) ||
-                        fractionInsidePolygon(it, hull, pageSize) >= 0.8f
-                    } ?: emptyList()
-                    if (intersecting.isNotEmpty()) {
-                        onEraseInkStrokes(currentIndex, intersecting.map { it.id })
-                        return@awaitEachGesture
+                val capturedPoints = if (points.size < 2) listOf(points[0], points[0]) else points.toList()
+                val capturedPageStrokes = completedInkStrokesRef.value[currentIndex]
+                val capturedPageSize = pageSize
+                val capturedIndex = currentIndex
+
+                // Add the stroke to completedInkStrokes immediately so it stays visible
+                // when the next gesture overwrites currentInkStroke.
+                val addedId = onAddInkAnnotation(capturedIndex, capturedPoints, capturedPageSize.width, capturedPageSize.height)
+                currentInkStroke = null
+
+                // Run O(m×n) scribble detection on Default so the gesture loop restarts
+                // immediately and the user's next stroke is not delayed.
+                pageScope.launch(Dispatchers.Default) {
+                    val normalizedPoints = capturedPoints.map {
+                        Offset(it.x / capturedPageSize.width, it.y / capturedPageSize.height)
                     }
-                    // Scribble detected but nothing nearby → fall through and draw as ink
+                    val scribble = isScribble(capturedPoints)
+                    if (scribble.isScribble) {
+                        val hull = convexHull(scribble.reversalPoints)
+                        val intersecting = capturedPageStrokes?.filter {
+                            strokeIntersectsScribble(it.points, normalizedPoints) ||
+                            strokeNearScribble(it.points, capturedPoints, capturedPageSize, 10f) ||
+                            fractionInsidePolygon(it, hull, capturedPageSize) >= 0.8f
+                        } ?: emptyList()
+                        if (intersecting.isNotEmpty()) {
+                            // Erase intersected strokes plus the scribble itself
+                            withContext(Dispatchers.Main) {
+                                onEraseInkStrokes(capturedIndex, intersecting.map { it.id } + addedId)
+                            }
+                        }
+                    }
+                    // Not a scribble, or scribble with nothing nearby → stroke stays as-is
                 }
-                val stroke = if (points.size < 2) listOf(points[0], points[0]) else points
-                onAddInkAnnotation(currentIndex, stroke, pageSize.width, pageSize.height)
+                // awaitEachGesture restarts immediately; scribble detection finishes in background
             }
         }
     }) {
