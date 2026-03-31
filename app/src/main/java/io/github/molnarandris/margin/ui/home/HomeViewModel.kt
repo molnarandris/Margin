@@ -17,6 +17,17 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+enum class SortOrder { BY_NAME, BY_LAST_MODIFIED }
+
+private fun List<FileSystemItem>.applySortOrder(order: SortOrder): List<FileSystemItem> {
+    val dirs = filterIsInstance<FileSystemItem.DirItem>()
+    val pdfs = filterIsInstance<FileSystemItem.PdfItem>()
+    return when (order) {
+        SortOrder.BY_NAME -> dirs.sortedBy { it.name } + pdfs.sortedBy { it.pdf.name }
+        SortOrder.BY_LAST_MODIFIED -> dirs.sortedByDescending { it.lastModified } + pdfs.sortedByDescending { it.pdf.lastModified }
+    }
+}
+
 sealed class HomeUiState {
     object Loading : HomeUiState()
     object NoDirectory : HomeUiState()
@@ -41,14 +52,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _openPdfEvent = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
     val openPdfEvent: SharedFlow<Uri> = _openPdfEvent.asSharedFlow()
 
+    private val _sortOrder = MutableStateFlow(SortOrder.BY_NAME)
+    val sortOrder: StateFlow<SortOrder> = _sortOrder.asStateFlow()
+
     init {
         viewModelScope.launch {
+            val saved = prefsRepo.getSortOrder()
+            if (saved != null) _sortOrder.value = runCatching { SortOrder.valueOf(saved) }.getOrDefault(SortOrder.BY_NAME)
             prefsRepo.directoryUriString.collect { uriString ->
                 if (uriString == null) {
                     _uiState.value = HomeUiState.NoDirectory
                 } else {
                     val uri = Uri.parse(uriString)
-                    val items = pdfRepo.listContents(uri, emptyList())
+                    val items = pdfRepo.listContents(uri, emptyList()).applySortOrder(_sortOrder.value)
                     _uiState.value = HomeUiState.Ready(uri, emptyList(), items)
                 }
             }
@@ -65,12 +81,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setSortOrder(order: SortOrder) {
+        _sortOrder.value = order
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        _uiState.value = state.copy(items = state.items.applySortOrder(order))
+        viewModelScope.launch { prefsRepo.saveSortOrder(order.name) }
+    }
+
     fun importPdf(sourceUri: Uri) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
             val success = pdfRepo.importPdf(sourceUri, state.rootUri, state.currentPath)
             if (success) {
-                val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+                val items = pdfRepo.listContents(state.rootUri, state.currentPath).applySortOrder(_sortOrder.value)
                 _uiState.value = state.copy(items = items)
             }
         }
@@ -82,7 +105,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val deleted = pdfRepo.deletePdf(uri)
             if (deleted) {
                 prefsRepo.clearPdfData(uri)
-                val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+                val items = pdfRepo.listContents(state.rootUri, state.currentPath).applySortOrder(_sortOrder.value)
                 _uiState.value = state.copy(items = items)
             }
         }
@@ -106,7 +129,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val uri = pdfRepo.createBlankPdf(state.rootUri) ?: return@launch
             _openPdfEvent.emit(uri)
-            val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+            val items = pdfRepo.listContents(state.rootUri, state.currentPath).applySortOrder(_sortOrder.value)
             _uiState.value = state.copy(items = items)
         }
     }
@@ -114,7 +137,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshContents() {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+            val items = pdfRepo.listContents(state.rootUri, state.currentPath).applySortOrder(_sortOrder.value)
             _uiState.value = state.copy(items = items)
         }
     }
@@ -123,7 +146,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
             val newPath = state.currentPath + dirName
-            val items = pdfRepo.listContents(state.rootUri, newPath)
+            val items = pdfRepo.listContents(state.rootUri, newPath).applySortOrder(_sortOrder.value)
             _uiState.value = state.copy(currentPath = newPath, items = items)
         }
     }
@@ -133,7 +156,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         if (state.isAtRoot) return
         viewModelScope.launch {
             val newPath = state.currentPath.dropLast(1)
-            val items = pdfRepo.listContents(state.rootUri, newPath)
+            val items = pdfRepo.listContents(state.rootUri, newPath).applySortOrder(_sortOrder.value)
             _uiState.value = state.copy(currentPath = newPath, items = items)
         }
     }
@@ -143,7 +166,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val success = pdfRepo.createDirectory(state.rootUri, state.currentPath, name)
             if (success) {
-                val items = pdfRepo.listContents(state.rootUri, state.currentPath)
+                val items = pdfRepo.listContents(state.rootUri, state.currentPath).applySortOrder(_sortOrder.value)
                 _uiState.value = state.copy(items = items)
             }
         }

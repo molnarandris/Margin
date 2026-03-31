@@ -26,10 +26,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -76,6 +78,7 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val sortOrder by viewModel.sortOrder.collectAsState()
 
     LaunchedEffect(Unit) {
         viewModel.openPdfEvent.collect { docUri ->
@@ -129,6 +132,31 @@ fun HomeScreen(
                 },
                 actions = {
                     if (readyState != null) {
+                        var showSortMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { showSortMenu = true }) {
+                                Icon(Icons.Default.SwapVert, contentDescription = "Sort")
+                            }
+                            DropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Name") },
+                                    onClick = { viewModel.setSortOrder(SortOrder.BY_NAME); showSortMenu = false },
+                                    trailingIcon = if (sortOrder == SortOrder.BY_NAME) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Last modified") },
+                                    onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_MODIFIED); showSortMenu = false },
+                                    trailingIcon = if (sortOrder == SortOrder.BY_LAST_MODIFIED) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null
+                                )
+                            }
+                        }
                         IconButton(onClick = { showCreateFolderDialog = true }) {
                             Icon(Icons.Default.CreateNewFolder, contentDescription = "Create folder")
                         }

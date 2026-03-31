@@ -12,11 +12,11 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.LocalDateTime
 
-data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "")
+data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "", val lastModified: Long = 0L)
 
 sealed class FileSystemItem {
     data class PdfItem(val pdf: PdfFile) : FileSystemItem()
-    data class DirItem(val uri: Uri, val name: String) : FileSystemItem()
+    data class DirItem(val uri: Uri, val name: String, val lastModified: Long = 0L) : FileSystemItem()
 }
 
 private fun backupFileFor(context: Context, uri: Uri): File =
@@ -59,7 +59,7 @@ class PdfRepository(private val context: Context) {
         val pdfs = mutableListOf<FileSystemItem.PdfItem>()
         for (file in dir.listFiles()) {
             when {
-                file.isDirectory -> dirs.add(FileSystemItem.DirItem(file.uri, file.name ?: "Untitled"))
+                file.isDirectory -> dirs.add(FileSystemItem.DirItem(file.uri, file.name ?: "Untitled", file.lastModified()))
                 file.isFile && file.type == "application/pdf" -> {
                     val name = file.name ?: "Untitled.pdf"
                     val uriStr = file.uri.toString()
@@ -83,11 +83,11 @@ class PdfRepository(private val context: Context) {
                         dao.upsert(PdfMetadataEntity(uriStr, name, meta.first, meta.second, lastModified))
                         meta
                     }
-                    pdfs.add(FileSystemItem.PdfItem(PdfFile(uri = file.uri, name = name, title = title, author = author)))
+                    pdfs.add(FileSystemItem.PdfItem(PdfFile(uri = file.uri, name = name, title = title, author = author, lastModified = lastModified)))
                 }
             }
         }
-        dirs.sortedBy { it.name } + pdfs.sortedBy { it.pdf.name }
+        dirs + pdfs
     }
 
     suspend fun createDirectory(rootUri: Uri, pathFromRoot: List<String>, name: String): Boolean = withContext(Dispatchers.IO) {

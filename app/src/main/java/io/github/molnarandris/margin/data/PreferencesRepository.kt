@@ -21,6 +21,7 @@ class PreferencesRepository(private val context: Context) {
     private val penColorKey = stringPreferencesKey("pen_color")
     private val penThicknessKey = stringPreferencesKey("pen_thickness")
     private val keepScreenOnKey = booleanPreferencesKey("keep_screen_on")
+    private val sortOrderKey = stringPreferencesKey("sort_order")
     private fun lastPageKey(uri: Uri) = intPreferencesKey("last_page_${uri.toString().hashCode()}")
 
     val directoryUriString: Flow<String?> = context.dataStore.data.map { prefs ->
@@ -59,5 +60,11 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun saveKeepScreenOn(value: Boolean) {
         context.dataStore.edit { it[keepScreenOnKey] = value }
+    }
+
+    suspend fun getSortOrder(): String? = context.dataStore.data.map { it[sortOrderKey] }.first()
+
+    suspend fun saveSortOrder(name: String) {
+        context.dataStore.edit { it[sortOrderKey] = name }
     }
 }
