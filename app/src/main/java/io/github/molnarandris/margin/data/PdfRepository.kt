@@ -33,6 +33,8 @@ private fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
 
 class PdfRepository(private val context: Context) {
 
+    private val dao = PdfDatabase.getInstance(context).pdfMetadataDao()
+
     private fun navigateToDir(rootUri: Uri, pathFromRoot: List<String>): DocumentFile? {
         var dir = DocumentFile.fromTreeUri(context, rootUri) ?: return null
         for (segment in pathFromRoot) {
@@ -60,17 +62,26 @@ class PdfRepository(private val context: Context) {
                 file.isDirectory -> dirs.add(FileSystemItem.DirItem(file.uri, file.name ?: "Untitled"))
                 file.isFile && file.type == "application/pdf" -> {
                     val name = file.name ?: "Untitled.pdf"
-                    val (title, author) = try {
-                        context.contentResolver.openInputStream(file.uri)?.use { stream ->
-                            val doc = PDDocument.load(stream)
-                            val info = doc.documentInformation
-                            val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
-                            val a = info?.author?.takeIf { it.isNotBlank() } ?: ""
-                            doc.close()
-                            t to a
-                        } ?: ("" to "")
-                    } catch (e: Exception) {
-                        "" to ""
+                    val uriStr = file.uri.toString()
+                    val lastModified = file.lastModified()
+                    val cached = dao.getByUri(uriStr)
+                    val (title, author) = if (cached != null && cached.lastModified == lastModified) {
+                        cached.title to cached.author
+                    } else {
+                        val meta = try {
+                            context.contentResolver.openInputStream(file.uri)?.use { stream ->
+                                val doc = PDDocument.load(stream)
+                                val info = doc.documentInformation
+                                val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
+                                val a = info?.author?.takeIf { it.isNotBlank() } ?: ""
+                                doc.close()
+                                t to a
+                            } ?: ("" to "")
+                        } catch (e: Exception) {
+                            "" to ""
+                        }
+                        dao.upsert(PdfMetadataEntity(uriStr, name, meta.first, meta.second, lastModified))
+                        meta
                     }
                     pdfs.add(FileSystemItem.PdfItem(PdfFile(uri = file.uri, name = name, title = title, author = author)))
                 }
@@ -101,7 +112,9 @@ class PdfRepository(private val context: Context) {
     }
 
     suspend fun deletePdf(uri: Uri): Boolean = withContext(Dispatchers.IO) {
-        DocumentFile.fromSingleUri(context, uri)?.delete() ?: false
+        val deleted = DocumentFile.fromSingleUri(context, uri)?.delete() ?: false
+        if (deleted) dao.deleteByUri(uri.toString())
+        deleted
     }
 
     suspend fun updateMetadata(uri: Uri, title: String, author: String): Boolean =
@@ -114,6 +127,10 @@ class PdfRepository(private val context: Context) {
                 info.author = author.ifBlank { null }
                 doc.saveWithBackup(context, uri)
                 doc.close()
+                val uriStr = uri.toString()
+                val lastModified = DocumentFile.fromSingleUri(context, uri)?.lastModified() ?: 0L
+                val existingName = dao.getByUri(uriStr)?.name ?: ""
+                dao.upsert(PdfMetadataEntity(uriStr, existingName, title.ifBlank { "" }, author.ifBlank { "" }, lastModified))
                 true
             } catch (e: Exception) {
                 false
@@ -136,6 +153,8 @@ class PdfRepository(private val context: Context) {
             doc.addPage(PDPage(PDRectangle.A4))
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
             doc.close()
+            val lastModified = destFile.lastModified()
+            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, "", "", lastModified))
             destFile.uri
         } catch (e: Exception) {
             null
