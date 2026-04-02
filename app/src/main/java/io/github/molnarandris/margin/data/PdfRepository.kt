@@ -59,7 +59,7 @@ class PdfRepository(private val context: Context) {
         val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext emptyList()
         val dirs = mutableListOf<FileSystemItem.DirItem>()
         val pdfs = mutableListOf<FileSystemItem.PdfItem>()
-        for (file in dir.listFiles()) {
+        for (file in dir.listFiles().filter { it.name?.startsWith(".") != true }) {
             when {
                 file.isDirectory -> dirs.add(FileSystemItem.DirItem(file.uri, file.name ?: "Untitled", file.lastModified()))
                 file.isFile && file.type == "application/pdf" -> {
