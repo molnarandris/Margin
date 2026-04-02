@@ -444,6 +444,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
                     val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
                     val newPage = PDPage(mediaBox)
+                    newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
                     if (insertBeforeIndex >= pdDoc.numberOfPages) {
                         pdDoc.addPage(newPage)
                     } else {
@@ -471,6 +472,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
                     val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
                     val newPage = PDPage(mediaBox)
+                    newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
                     if (insertBeforeIndex >= pdDoc.numberOfPages) {
                         pdDoc.addPage(newPage)
                     } else {

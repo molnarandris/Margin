@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
+import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
@@ -156,7 +157,9 @@ class PdfRepository(private val context: Context) {
             info.creator = "Margin"
             info.setCreationDate(Calendar.getInstance())
             doc.documentInformation = info
-            doc.addPage(PDPage(PDRectangle.A4))
+            val page = PDPage(PDRectangle.A4)
+            page.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
+            doc.addPage(page)
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
             doc.close()
             val lastModified = destFile.lastModified()
