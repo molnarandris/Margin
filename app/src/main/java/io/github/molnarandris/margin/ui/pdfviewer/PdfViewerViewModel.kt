@@ -223,6 +223,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _completedInkStrokes = MutableStateFlow<Map<Int, List<InkStroke>>>(emptyMap())
     val completedInkStrokes: StateFlow<Map<Int, List<InkStroke>>> = _completedInkStrokes.asStateFlow()
 
+    private val _inkClipboard = MutableStateFlow<List<InkStroke>?>(null)
+    val inkClipboard: StateFlow<List<InkStroke>?> = _inkClipboard.asStateFlow()
+
     private val _penColor = MutableStateFlow(StrokeColor.BLACK)
     val penColor: StateFlow<StrokeColor> = _penColor.asStateFlow()
 
@@ -974,6 +977,30 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 reloadPage(uri, app, pageIndex)
             }
+        }
+    }
+
+    fun copyInkStrokes(strokes: List<InkStroke>) {
+        _inkClipboard.value = strokes
+    }
+
+    fun pasteInkStrokes(pageIndex: Int, centerNorm: Offset) {
+        val clipStrokes = _inkClipboard.value ?: return
+        if (clipStrokes.isEmpty()) return
+        val allPts = clipStrokes.flatMap { it.points }
+        val clipCenter = Offset(
+            (allPts.minOf { it.x } + allPts.maxOf { it.x }) / 2f,
+            (allPts.minOf { it.y } + allPts.maxOf { it.y }) / 2f
+        )
+        val dx = centerNorm.x - clipCenter.x
+        val dy = centerNorm.y - clipCenter.y
+        clipStrokes.forEach { stroke ->
+            val newStroke = stroke.copy(
+                id = nextStrokeId++,
+                points = stroke.points.map { Offset(it.x + dx, it.y + dy) }
+            )
+            pushUndo(UndoableAction.StrokeAdded(pageIndex, newStroke))
+            addStrokeDirectly(pageIndex, newStroke)
         }
     }
 

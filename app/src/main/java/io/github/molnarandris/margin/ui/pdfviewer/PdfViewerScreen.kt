@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
@@ -164,6 +166,7 @@ fun PdfViewerScreen(
     val uiState by viewModel.uiState.collectAsState()
     val searchState by viewModel.searchState.collectAsState()
     val completedInkStrokes by viewModel.completedInkStrokes.collectAsState()
+    val inkClipboard by viewModel.inkClipboard.collectAsState()
     val penColor by viewModel.penColor.collectAsState()
     val penThickness by viewModel.penThickness.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
@@ -836,7 +839,10 @@ fun PdfViewerScreen(
                                     }
                                 },
                                 onInsertPageBefore = { viewModel.insertPage(currentPage) },
-                                onInsertPageAfter = { viewModel.insertPage(currentPage + 1) }
+                                onInsertPageAfter = { viewModel.insertPage(currentPage + 1) },
+                                inkClipboard = inkClipboard,
+                                onCopyInkStrokes = { viewModel.copyInkStrokes(it) },
+                                onPasteInkStrokes = { pageIdx, centerNorm -> viewModel.pasteInkStrokes(pageIdx, centerNorm) },
                             )
                         }
                         AnimatedVisibility(
@@ -902,13 +908,18 @@ private fun PageContent(
     onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit,
     onDeletePage: () -> Unit,
     onInsertPageBefore: () -> Unit,
-    onInsertPageAfter: () -> Unit
+    onInsertPageAfter: () -> Unit,
+    inkClipboard: List<InkStroke>?,
+    onCopyInkStrokes: (List<InkStroke>) -> Unit,
+    onPasteInkStrokes: (Int, Offset) -> Unit,
 ) {
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
     var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
     var showPageContextMenu by remember { mutableStateOf(false) }
     var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
     var contextMenuSize by remember { mutableStateOf(IntSize.Zero) }
+    var selectionMenuSize by remember { mutableStateOf(IntSize.Zero) }
+    val selectionMenuSizeRef = rememberUpdatedState(selectionMenuSize)
     val completedInkStrokesRef = rememberUpdatedState(completedInkStrokes)
     val inkStrokeSelectionRef = rememberUpdatedState(inkStrokeSelection)
     val indexRef = rememberUpdatedState(index)
@@ -943,8 +954,21 @@ private fun PageContent(
                     }
                     return@awaitEachGesture
                 } else {
-                    // Tap outside: deselect — do NOT draw, regardless of pointer type
-                    onStrokeSelectionChanged(null)
+                    // Tap outside: deselect unless the tap landed on the selection action menu
+                    val menuSz = selectionMenuSizeRef.value
+                    val tappedMenu = if (menuSz != IntSize.Zero) {
+                        val gapPx = 8.dp.roundToPx()
+                        val b2 = sel.bounds.translate(sel.dragOffsetPx)
+                        val mX = (b2.center.x - menuSz.width / 2f).roundToInt()
+                            .coerceIn(0, (pageSize.width - menuSz.width).coerceAtLeast(0)).toFloat()
+                        val mY = (b2.top - gapPx - menuSz.height).roundToInt()
+                            .coerceAtLeast(0).toFloat()
+                        Rect(mX, mY, mX + menuSz.width, mY + menuSz.height)
+                            .contains(down.position)
+                    } else false
+                    if (!tappedMenu) {
+                        onStrokeSelectionChanged(null)
+                    }
                     return@awaitEachGesture
                 }
             }
@@ -1200,6 +1224,45 @@ private fun PageContent(
                     )
                 )
             }
+            with(density) {
+                val gapPx = 8.dp.roundToPx()
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            val menuX = (b.center.x - selectionMenuSize.width / 2f).roundToInt()
+                                .coerceIn(0, (pageSize.width - selectionMenuSize.width).coerceAtLeast(0))
+                            val menuY = (b.top - gapPx - selectionMenuSize.height).roundToInt().coerceAtLeast(0)
+                            IntOffset(menuX, menuY)
+                        }
+                        .onSizeChanged { selectionMenuSize = it }
+                ) {
+                    Card(
+                        elevation = CardDefaults.cardElevation(4.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
+                            IconButton(onClick = {
+                                onCopyInkStrokes(activeSel.strokes)
+                            }) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                            }
+                            IconButton(onClick = {
+                                onCopyInkStrokes(activeSel.strokes)
+                                onEraseInkStrokes(activeSel.pageIndex, activeSel.strokes.map { it.id })
+                                onStrokeSelectionChanged(null)
+                            }) {
+                                Icon(Icons.Default.ContentCut, contentDescription = "Cut")
+                            }
+                            IconButton(onClick = {
+                                onEraseInkStrokes(activeSel.pageIndex, activeSel.strokes.map { it.id })
+                                onStrokeSelectionChanged(null)
+                            }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete")
+                            }
+                        }
+                    }
+                }
+            }
         }
         val inkStroke = currentInkStroke
         if (inkStroke != null && inkStroke.size >= 2) {
@@ -1449,6 +1512,18 @@ private fun PageContent(
                                 onInsertPageAfter()
                             }) {
                                 InsertPageIcon(before = false)
+                            }
+                            if (!inkClipboard.isNullOrEmpty()) {
+                                IconButton(onClick = {
+                                    showPageContextMenu = false
+                                    val centerNorm = Offset(
+                                        contextMenuOffset.x / pageSize.width,
+                                        contextMenuOffset.y / pageSize.height
+                                    )
+                                    onPasteInkStrokes(index, centerNorm)
+                                }) {
+                                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste")
+                                }
                             }
                         }
                     }
