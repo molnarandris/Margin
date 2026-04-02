@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.LocalDateTime
+import java.util.Calendar
 
 data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "", val lastModified: Long = 0L)
 
@@ -27,6 +28,7 @@ private fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
     context.contentResolver.openInputStream(uri)?.use { input ->
         backup.outputStream().use { input.copyTo(it) }
     }
+    documentInformation.setModificationDate(Calendar.getInstance())
     context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
     backup.delete()
 }
@@ -150,6 +152,10 @@ class PdfRepository(private val context: Context) {
             val dir = navigateToDirOrCreate(rootUri, listOf("Notes", yyyy, mm)) ?: return@withContext null
             val destFile = dir.createFile("application/pdf", name) ?: return@withContext null
             val doc = PDDocument()
+            val info = doc.documentInformation
+            info.creator = "Margin"
+            info.setCreationDate(Calendar.getInstance())
+            doc.documentInformation = info
             doc.addPage(PDPage(PDRectangle.A4))
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
             doc.close()

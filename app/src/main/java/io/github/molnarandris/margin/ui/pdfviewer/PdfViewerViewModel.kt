@@ -49,6 +49,7 @@ import kotlinx.coroutines.withContext
 import android.content.Context
 import io.github.molnarandris.margin.data.PreferencesRepository
 import java.io.File
+import java.util.Calendar
 import java.util.concurrent.ConcurrentHashMap
 
 sealed class LinkTarget {
@@ -141,6 +142,7 @@ private suspend fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
         context.contentResolver.openInputStream(uri)?.use { input ->
             backup.outputStream().use { input.copyTo(it) }
         }
+        documentInformation.setModificationDate(Calendar.getInstance())
         context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
         backup.delete()
     }
