@@ -986,24 +986,6 @@ private fun PageContent(
                     val bounds = computeSelectionBounds(selected, pageSize)
                     onStrokeSelectionChanged(InkStrokeSelection(currentIndex, selected, bounds))
                 }
-                // ── Phase C: Seamless move (pen still held after lasso trigger) ─
-                var prevPos = points.last()
-                var totalDelta = Offset.Zero
-                val selectedForMove = selected  // capture for commit
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.find { it.id == down.id } ?: break
-                    if (!change.pressed) {
-                        if (totalDelta != Offset.Zero && selectedForMove.isNotEmpty())
-                            onCommitSelectionMove(currentIndex, selectedForMove, totalDelta, pageSize)
-                        break
-                    }
-                    change.consume()
-                    val delta = change.position - prevPos
-                    prevPos = change.position
-                    totalDelta += delta
-                    onSelectionDragDelta(delta)
-                }
                 return@awaitEachGesture  // Never becomes an ink stroke
             }
 
