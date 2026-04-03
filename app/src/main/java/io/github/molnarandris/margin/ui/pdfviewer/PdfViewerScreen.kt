@@ -37,7 +37,11 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.InputChip
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -151,7 +155,7 @@ private data class InkStrokeSelection(
 
 private data class ScribbleResult(val isScribble: Boolean, val reversalPoints: List<Offset>)
 
-@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalLayoutApi::class)
 @Composable
 fun PdfViewerScreen(
     dirUri: Uri,
@@ -180,11 +184,14 @@ fun PdfViewerScreen(
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    val pdfTitle  by viewModel.displayTitle.collectAsState()
-    val pdfAuthor by viewModel.displayAuthor.collectAsState()
+    val pdfTitle    by viewModel.displayTitle.collectAsState()
+    val pdfAuthor   by viewModel.displayAuthor.collectAsState()
+    val pdfProjects by viewModel.displayProjects.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
-    var titleEditText  by remember { mutableStateOf("") }
-    var authorEditText by remember { mutableStateOf("") }
+    var titleEditText   by remember { mutableStateOf("") }
+    var authorEditText  by remember { mutableStateOf("") }
+    var projectChips   by remember { mutableStateOf<List<String>>(emptyList()) }
+    var newProjectText  by remember { mutableStateOf("") }
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
     var noteDialogText   by remember { mutableStateOf("") }
     var currentPage by remember { mutableStateOf(viewModel.firstVisiblePageIndex) }
@@ -241,11 +248,45 @@ fun PdfViewerScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (projectChips.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            projectChips.forEach { project ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {},
+                                    label = { Text(project) },
+                                    trailingIcon = {
+                                        IconButton(onClick = { projectChips = projectChips - project }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remove")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newProjectText,
+                            onValueChange = { newProjectText = it },
+                            label = { Text("Add project") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            val trimmed = newProjectText.trim()
+                            if (trimmed.isNotEmpty() && trimmed !in projectChips) {
+                                projectChips = projectChips + trimmed
+                            }
+                            newProjectText = ""
+                        }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add project")
+                        }
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.setMetadata(titleEditText, authorEditText)
+                    viewModel.setMetadata(titleEditText, authorEditText, projectChips)
                     isEditDialogVisible = false
                 }) { Text("Save") }
             },
@@ -369,6 +410,8 @@ fun PdfViewerScreen(
                                 detectTapGestures(onLongPress = {
                                     titleEditText  = pdfTitle
                                     authorEditText = pdfAuthor
+                                    projectChips   = pdfProjects
+                                    newProjectText = ""
                                     isEditDialogVisible = true
                                 })
                             }

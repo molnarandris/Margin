@@ -47,10 +47,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import android.content.Context
+import io.github.molnarandris.margin.data.PdfRepository
 import io.github.molnarandris.margin.data.PreferencesRepository
 import java.io.File
-import java.util.Calendar
-import java.util.concurrent.ConcurrentHashMap
 
 sealed class LinkTarget {
     data class Url(val uri: Uri) : LinkTarget()
@@ -113,7 +112,7 @@ sealed class UndoableAction {
     data class HighlightAdded(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
     data class HighlightDeleted(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
     data class AnnotationEdited(val pageIndex: Int, val bounds: List<RectF>, val oldNote: String?, val newNote: String?) : UndoableAction()
-    data class MetadataChanged(val oldTitle: String, val newTitle: String, val oldAuthor: String, val newAuthor: String) : UndoableAction()
+    data class MetadataChanged(val oldTitle: String, val newTitle: String, val oldAuthor: String, val newAuthor: String, val oldProjects: List<String>, val newProjects: List<String>) : UndoableAction()
     data class StrokesMoved(val pageIndex: Int, val originalStrokes: List<InkStroke>, val movedStrokes: List<InkStroke>) : UndoableAction()
 }
 
@@ -128,24 +127,9 @@ data class PdfPage(
 
 sealed class PdfViewerUiState {
     object Loading : PdfViewerUiState()
-    data class Ready(val pages: List<PdfPage>, val title: String = "", val author: String = "") : PdfViewerUiState()
+    data class Ready(val pages: List<PdfPage>, val title: String = "", val author: String = "", val projects: List<String> = emptyList()) : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
     data class CorruptedWithBackup(val backupFile: File, val uri: Uri) : PdfViewerUiState()
-}
-
-private fun backupFileFor(context: Context, uri: Uri): File =
-    File(context.filesDir, "backup_${uri.toString().hashCode()}.pdf")
-
-private suspend fun PDDocument.saveWithBackup(context: Context, uri: Uri) {
-    PdfViewerViewModel.fileWriteLockFor(uri).withLock {
-        val backup = backupFileFor(context, uri)
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            backup.outputStream().use { input.copyTo(it) }
-        }
-        documentInformation.setModificationDate(Calendar.getInstance())
-        context.contentResolver.openOutputStream(uri, "wt")!!.use { save(it) }
-        backup.delete()
-    }
 }
 
 private class WordExtractor(private val pageCount: Int) : PDFTextStripper() {
@@ -213,6 +197,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _displayAuthor = MutableStateFlow("")
     val displayAuthor: StateFlow<String> = _displayAuthor.asStateFlow()
 
+    private val _displayProjects = MutableStateFlow<List<String>>(emptyList())
+    val displayProjects: StateFlow<List<String>> = _displayProjects.asStateFlow()
+
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
 
@@ -233,6 +220,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     val penThickness: StateFlow<StrokeThickness> = _penThickness.asStateFlow()
 
     private val prefsRepo = PreferencesRepository(application)
+    private val pdfRepository = PdfRepository(application)
 
     init {
         viewModelScope.launch {
@@ -307,7 +295,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         setHighlightNote(it, action.oldNote ?: "")
                     }
                 is UndoableAction.MetadataChanged ->
-                    setMetadata(action.oldTitle, action.oldAuthor)
+                    setMetadata(action.oldTitle, action.oldAuthor, action.oldProjects)
                 is UndoableAction.StrokesMoved ->
                     moveInkStrokes(action.pageIndex, action.movedStrokes, action.originalStrokes)
             }
@@ -338,7 +326,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         setHighlightNote(it, action.newNote ?: "")
                     }
                 is UndoableAction.MetadataChanged ->
-                    setMetadata(action.newTitle, action.newAuthor)
+                    setMetadata(action.newTitle, action.newAuthor, action.newProjects)
                 is UndoableAction.StrokesMoved ->
                     moveInkStrokes(action.pageIndex, action.originalStrokes, action.movedStrokes)
             }
@@ -453,7 +441,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     } else {
                         pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
                     }
-                    pdDoc.saveWithBackup(app, uri)
+                    pdfRepository.save(pdDoc, uri)
                     pdDoc.close()
 
                     // Silently reopen renderer — no Loading state, no renderPages()
@@ -481,7 +469,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     } else {
                         pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
                     }
-                    pdDoc.saveWithBackup(app, uri)
+                    pdfRepository.save(pdDoc, uri)
                     pdDoc.close()
                 }
                 withContext(Dispatchers.Main) {
@@ -525,7 +513,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
                 pdDoc.removePage(pageIndex)
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
                 pdDoc.close()
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
@@ -700,7 +688,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 pdPage.annotations.add(ann)
 
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
 
                 // Re-extract highlights to get correct annotationIndex (needed for deletion)
                 val newHighlights = extractHighlights(pdDoc, pageIndex, pageH)
@@ -802,7 +790,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         strokesByPage.forEach { (pageIndex, strokes) ->
             strokes.forEach { stroke -> addInkAnnotationToDoc(pdDoc, pageIndex, stroke) }
         }
-        pdDoc.saveWithBackup(app, uri)
+        pdfRepository.save(pdDoc, uri)
         pdDoc.close()
         pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
         renderer = PdfRenderer(pfd!!)
@@ -886,7 +874,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val annotations = pdPage.annotations
                 annotations.removeAll(annotations.filter { it.annotationName in origNames })
                 for (s in inPdfMoved) addInkAnnotationToDoc(pdDoc, pageIndex, s)
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
                 pdDoc.close()
                 pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 renderer = PdfRenderer(pfd!!)
@@ -972,7 +960,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val annotations = pdPage.annotations
                 annotations.removeAll(annotations.filter { it.annotationName in namesToRemove })
 
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
                 pdDoc.close()
 
                 reloadPage(uri, app, pageIndex)
@@ -1020,7 +1008,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 if (highlight.annotationIndex in annotations.indices) {
                     annotations.removeAt(highlight.annotationIndex)
                 }
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
                 pdDoc.close()
 
                 reloadPage(uri, app, highlight.pageIndex)
@@ -1076,7 +1064,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 pdPage.annotations.add(ann)
 
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
                 val newHighlights = extractHighlights(pdDoc, pageIndex, pageH)
                 pdDoc.close()
 
@@ -1115,7 +1103,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     if (note.isBlank()) ann.getCOSObject().removeItem(COSName.CONTENTS)
                     else ann.contents = note
                 }
-                pdDoc.saveWithBackup(app, uri)
+                pdfRepository.save(pdDoc, uri)
                 pdDoc.close()
 
                 reloadPage(uri, app, highlight.pageIndex)
@@ -1310,7 +1298,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 // Hold the file write lock while opening the file to prevent reading a
                 // partially-written file if a background save is in progress.
-                val (newPfd, pdDoc) = fileWriteLockFor(uri).withLock {
+                val (newPfd, pdDoc) = PdfRepository.fileWriteLockFor(uri).withLock {
                     val pfd = app.contentResolver.openFileDescriptor(uri, "r")
                         ?: run {
                             withContext(Dispatchers.Main) {
@@ -1327,11 +1315,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val newRenderer = PdfRenderer(newPfd)
                 renderer = newRenderer
                 currentRenderScale = 2f
-                val title  = pdDoc.documentInformation?.title?.takeIf  { it.isNotBlank() } ?: ""
-                val author = pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() } ?: ""
+                val title    = pdDoc.documentInformation?.title?.takeIf  { it.isNotBlank() } ?: ""
+                val author   = pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() } ?: ""
+                val projects = PdfRepository.readProjectsFromXmp(pdDoc)
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthor.value = author
+                    _displayProjects.value = projects
                 }
 
                 // Extract outline (fast — just traverses bookmark tree)
@@ -1360,7 +1350,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pages, title, author)
+                    _uiState.value = PdfViewerUiState.Ready(pages, title, author, projects)
                     if (initialPage > 0) _pendingScrollToPage.value = initialPage
                 }
 
@@ -1374,7 +1364,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     page.copy(highlights = allHighlights[i])
                 }
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, author)
+                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, author, projects)
                 }
 
                 // Extract ink strokes from saved annotations and populate overlay
@@ -1399,7 +1389,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             } catch (e: Exception) {
                 val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
-                val backup = backupFileFor(getApplication(), uri)
+                val backup = pdfRepository.backupFileFor(uri)
                 withContext(Dispatchers.Main) {
                     _uiState.value = if (backup.exists()) {
                         PdfViewerUiState.CorruptedWithBackup(backup, uri)
@@ -1410,12 +1400,14 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-    fun setMetadata(newTitle: String, newAuthor: String) {
+    fun setMetadata(newTitle: String, newAuthor: String, newProjects: List<String>) {
         pushUndo(UndoableAction.MetadataChanged(
             oldTitle = _displayTitle.value,
             newTitle = newTitle,
             oldAuthor = _displayAuthor.value,
-            newAuthor = newAuthor
+            newAuthor = newAuthor,
+            oldProjects = _displayProjects.value,
+            newProjects = newProjects
         ))
         flushPendingInkStrokes()
         launchSave {
@@ -1430,7 +1422,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 info.title  = newTitle
                 info.author = newAuthor
                 pdDoc.documentInformation = info  // re-attach in case no /Info dict existed
-                pdDoc.saveWithBackup(app, uri)
+                PdfRepository.writeProjectsToXmp(pdDoc, newProjects)
+                pdfRepository.save(pdDoc, uri)
                 pdDoc.close()
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
@@ -1441,7 +1434,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             withContext(Dispatchers.Main) {
                 _displayTitle.value = newTitle
                 _displayAuthor.value = newAuthor
-                _uiState.value = state.copy(title = newTitle, author = newAuthor)
+                _displayProjects.value = newProjects
+                _uiState.value = state.copy(title = newTitle, author = newAuthor, projects = newProjects)
             }
         }
     }
@@ -1475,9 +1469,4 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    companion object {
-        private val fileWriteLocks = ConcurrentHashMap<String, Mutex>()
-        fun fileWriteLockFor(uri: Uri): Mutex =
-            fileWriteLocks.getOrPut(uri.toString()) { Mutex() }
-    }
 }

@@ -27,12 +27,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -215,8 +219,8 @@ fun HomeScreen(
                         onDirDelete = { viewModel.deleteItem(it.uri) },
                         onPdfClick = { onOpenPdf(state.rootUri, it.uri) },
                         onPdfDelete = { viewModel.deleteItem(it.uri) },
-                        onPdfMetadataUpdate = { pdf, title, author ->
-                            viewModel.updateMetadata(pdf, title, author)
+                        onPdfMetadataUpdate = { pdf, title, author, projects ->
+                            viewModel.updateMetadata(pdf, title, author, projects)
                         },
                         modifier = Modifier.padding(innerPadding)
                     )
@@ -285,7 +289,7 @@ private fun SplitFab(onImport: () -> Unit, onNewNote: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ContentList(
     items: List<FileSystemItem>,
@@ -293,7 +297,7 @@ private fun ContentList(
     onDirDelete: (FileSystemItem.DirItem) -> Unit,
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
-    onPdfMetadataUpdate: (PdfFile, String, String) -> Unit,
+    onPdfMetadataUpdate: (PdfFile, String, String, List<String>) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var menuTarget by remember { mutableStateOf<FileSystemItem?>(null) }
@@ -327,6 +331,8 @@ private fun ContentList(
     editTarget?.let { pdf ->
         var title by rememberSaveable(pdf.uri) { mutableStateOf(pdf.title) }
         var author by rememberSaveable(pdf.uri) { mutableStateOf(pdf.author) }
+        var projectChips by remember(pdf.uri) { mutableStateOf(pdf.projects) }
+        var newProjectText by rememberSaveable(pdf.uri) { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { editTarget = null },
             title = { Text("Edit metadata") },
@@ -344,10 +350,44 @@ private fun ContentList(
                         label = { Text("Author") },
                         singleLine = true
                     )
+                    if (projectChips.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            projectChips.forEach { project ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {},
+                                    label = { Text(project) },
+                                    trailingIcon = {
+                                        IconButton(onClick = { projectChips = projectChips - project }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remove")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newProjectText,
+                            onValueChange = { newProjectText = it },
+                            label = { Text("Add project") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            val trimmed = newProjectText.trim()
+                            if (trimmed.isNotEmpty() && trimmed !in projectChips) {
+                                projectChips = projectChips + trimmed
+                            }
+                            newProjectText = ""
+                        }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add project")
+                        }
+                    }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { onPdfMetadataUpdate(pdf, title, author); editTarget = null }) {
+                TextButton(onClick = { onPdfMetadataUpdate(pdf, title, author, projectChips); editTarget = null }) {
                     Text("Save")
                 }
             },
