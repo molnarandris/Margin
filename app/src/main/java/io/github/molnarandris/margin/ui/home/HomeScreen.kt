@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -83,6 +85,7 @@ fun HomeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val sortOrder by viewModel.sortOrder.collectAsState()
+    val authorFilter by viewModel.authorFilter.collectAsState()
 
     LaunchedEffect(Unit) {
         viewModel.openPdfEvent.collect { docUri ->
@@ -205,25 +208,35 @@ fun HomeScreen(
             }
 
             is HomeUiState.Ready -> {
-                if (state.items.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize().padding(innerPadding),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No PDFs yet. Tap + to import one.")
+                Column(modifier = Modifier.padding(innerPadding)) {
+                    if (state.availableAuthors.isNotEmpty()) {
+                        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)) {
+                            items(state.availableAuthors) { author ->
+                                FilterChip(
+                                    selected = authorFilter == author,
+                                    onClick = { viewModel.setAuthorFilter(if (authorFilter == author) null else author) },
+                                    label = { Text(author) },
+                                    modifier = Modifier.padding(end = 4.dp)
+                                )
+                            }
+                        }
                     }
-                } else {
-                    ContentList(
-                        items = state.items,
-                        onDirClick = { viewModel.navigateInto(it.name) },
-                        onDirDelete = { viewModel.deleteItem(it.uri) },
-                        onPdfClick = { onOpenPdf(state.rootUri, it.uri) },
-                        onPdfDelete = { viewModel.deleteItem(it.uri) },
-                        onPdfMetadataUpdate = { pdf, title, author, projects ->
-                            viewModel.updateMetadata(pdf, title, author, projects)
-                        },
-                        modifier = Modifier.padding(innerPadding)
-                    )
+                    if (state.items.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(if (state.activeAuthorFilter != null) "No PDFs by this author." else "No PDFs yet. Tap + to import one.")
+                        }
+                    } else {
+                        ContentList(
+                            items = state.items,
+                            onDirClick = { viewModel.navigateInto(it.name) },
+                            onDirDelete = { viewModel.deleteItem(it.uri) },
+                            onPdfClick = { onOpenPdf(state.rootUri, it.uri) },
+                            onPdfDelete = { viewModel.deleteItem(it.uri) },
+                            onPdfMetadataUpdate = { pdf, title, authors, projects ->
+                                viewModel.updateMetadata(pdf, title, authors, projects)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -297,7 +310,7 @@ private fun ContentList(
     onDirDelete: (FileSystemItem.DirItem) -> Unit,
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
-    onPdfMetadataUpdate: (PdfFile, String, String, List<String>) -> Unit,
+    onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var menuTarget by remember { mutableStateOf<FileSystemItem?>(null) }
@@ -330,7 +343,8 @@ private fun ContentList(
 
     editTarget?.let { pdf ->
         var title by rememberSaveable(pdf.uri) { mutableStateOf(pdf.title) }
-        var author by rememberSaveable(pdf.uri) { mutableStateOf(pdf.author) }
+        var authorChips by remember(pdf.uri) { mutableStateOf(pdf.authors) }
+        var newAuthorText by rememberSaveable(pdf.uri) { mutableStateOf("") }
         var projectChips by remember(pdf.uri) { mutableStateOf(pdf.projects) }
         var newProjectText by rememberSaveable(pdf.uri) { mutableStateOf("") }
         AlertDialog(
@@ -344,12 +358,40 @@ private fun ContentList(
                         label = { Text("Title") },
                         singleLine = true
                     )
-                    OutlinedTextField(
-                        value = author,
-                        onValueChange = { author = it },
-                        label = { Text("Author") },
-                        singleLine = true
-                    )
+                    if (authorChips.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            authorChips.forEach { author ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {},
+                                    label = { Text(author) },
+                                    trailingIcon = {
+                                        IconButton(onClick = { authorChips = authorChips - author }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remove")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newAuthorText,
+                            onValueChange = { newAuthorText = it },
+                            label = { Text("Add author") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            val trimmed = newAuthorText.trim()
+                            if (trimmed.isNotEmpty() && trimmed !in authorChips) {
+                                authorChips = authorChips + trimmed
+                            }
+                            newAuthorText = ""
+                        }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add author")
+                        }
+                    }
                     if (projectChips.isNotEmpty()) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             projectChips.forEach { project ->
@@ -387,7 +429,7 @@ private fun ContentList(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { onPdfMetadataUpdate(pdf, title, author, projectChips); editTarget = null }) {
+                TextButton(onClick = { onPdfMetadataUpdate(pdf, title, authorChips, projectChips); editTarget = null }) {
                     Text("Save")
                 }
             },
@@ -437,7 +479,7 @@ private fun ContentList(
                         val pdf = item.pdf
                         val meta = listOfNotNull(
                             pdf.title.takeIf { it.isNotBlank() },
-                            pdf.author.takeIf { it.isNotBlank() }
+                            pdf.authors.joinToString(", ").takeIf { it.isNotBlank() }
                         ).joinToString(" — ")
                         ListItem(
                             headlineContent = { Text(pdf.name) },

@@ -185,13 +185,14 @@ fun PdfViewerScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     val pdfTitle    by viewModel.displayTitle.collectAsState()
-    val pdfAuthor   by viewModel.displayAuthor.collectAsState()
+    val pdfAuthors  by viewModel.displayAuthors.collectAsState()
     val pdfProjects by viewModel.displayProjects.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
-    var titleEditText   by remember { mutableStateOf("") }
-    var authorEditText  by remember { mutableStateOf("") }
+    var titleEditText  by remember { mutableStateOf("") }
+    var authorChips    by remember { mutableStateOf<List<String>>(emptyList()) }
+    var newAuthorText  by remember { mutableStateOf("") }
     var projectChips   by remember { mutableStateOf<List<String>>(emptyList()) }
-    var newProjectText  by remember { mutableStateOf("") }
+    var newProjectText by remember { mutableStateOf("") }
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
     var noteDialogText   by remember { mutableStateOf("") }
     var currentPage by remember { mutableStateOf(viewModel.firstVisiblePageIndex) }
@@ -241,13 +242,40 @@ fun PdfViewerScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = authorEditText,
-                        onValueChange = { authorEditText = it },
-                        label = { Text("Author") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (authorChips.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            authorChips.forEach { author ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {},
+                                    label = { Text(author) },
+                                    trailingIcon = {
+                                        IconButton(onClick = { authorChips = authorChips - author }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remove")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newAuthorText,
+                            onValueChange = { newAuthorText = it },
+                            label = { Text("Add author") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = {
+                            val trimmed = newAuthorText.trim()
+                            if (trimmed.isNotEmpty() && trimmed !in authorChips) {
+                                authorChips = authorChips + trimmed
+                            }
+                            newAuthorText = ""
+                        }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add author")
+                        }
+                    }
                     if (projectChips.isNotEmpty()) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             projectChips.forEach { project ->
@@ -286,7 +314,7 @@ fun PdfViewerScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.setMetadata(titleEditText, authorEditText, projectChips)
+                    viewModel.setMetadata(titleEditText, authorChips, projectChips)
                     isEditDialogVisible = false
                 }) { Text("Save") }
             },
@@ -409,7 +437,8 @@ fun PdfViewerScreen(
                             modifier = Modifier.pointerInput(Unit) {
                                 detectTapGestures(onLongPress = {
                                     titleEditText  = pdfTitle
-                                    authorEditText = pdfAuthor
+                                    authorChips    = pdfAuthors
+                                    newAuthorText  = ""
                                     projectChips   = pdfProjects
                                     newProjectText = ""
                                     isEditDialogVisible = true
@@ -426,7 +455,7 @@ fun PdfViewerScreen(
                             val totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0
                             val pageInfo = if (totalPages > 0) "${currentPage + 1} / $totalPages" else ""
                             val subtitle = listOfNotNull(
-                                pdfAuthor.ifEmpty { null },
+                                pdfAuthors.joinToString(", ").ifEmpty { null },
                                 pageInfo.ifEmpty { null }
                             ).joinToString("  ·  ")
                             if (subtitle.isNotEmpty()) {

@@ -25,7 +25,7 @@ import javax.xml.transform.TransformerFactory
 import javax.xml.transform.dom.DOMSource
 import javax.xml.transform.stream.StreamResult
 
-data class PdfFile(val uri: Uri, val name: String, val title: String = "", val author: String = "", val lastModified: Long = 0L, val type: PdfType = PdfType.DOCUMENT, val projects: List<String> = emptyList())
+data class PdfFile(val uri: Uri, val name: String, val title: String = "", val authors: List<String> = emptyList(), val lastModified: Long = 0L, val type: PdfType = PdfType.DOCUMENT, val projects: List<String> = emptyList())
 
 sealed class FileSystemItem {
     data class PdfItem(val pdf: PdfFile) : FileSystemItem()
@@ -170,27 +170,27 @@ class PdfRepository(private val context: Context) {
                     val uriStr = file.uri.toString()
                     val lastModified = file.lastModified()
                     val cached = dao.getByUri(uriStr)
-                    val (title, author, type, projects) = if (cached != null && cached.lastModified == lastModified) {
-                        Quad(cached.title, cached.author, cached.type, cached.projects.split(",").filter { it.isNotBlank() })
+                    val (title, authors, type, projects) = if (cached != null && cached.lastModified == lastModified) {
+                        Quad(cached.title, cached.author.split(";").map { it.trim() }.filter { it.isNotBlank() }, cached.type, cached.projects.split(",").filter { it.isNotBlank() })
                     } else {
                         val meta = try {
                             context.contentResolver.openInputStream(file.uri)?.use { stream ->
                                 val doc = PDDocument.load(stream)
                                 val info = doc.documentInformation
                                 val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
-                                val a = info?.author?.takeIf { it.isNotBlank() } ?: ""
+                                val a = info?.author?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
                                 val tp = if (info?.creator == "Margin") PdfType.NOTE else PdfType.DOCUMENT
                                 val pr = readProjectsFromXmp(doc)
                                 doc.close()
                                 Quad(t, a, tp, pr)
-                            } ?: Quad("", "", PdfType.DOCUMENT, emptyList())
+                            } ?: Quad("", emptyList(), PdfType.DOCUMENT, emptyList())
                         } catch (e: Exception) {
-                            Quad("", "", PdfType.DOCUMENT, emptyList())
+                            Quad("", emptyList<String>(), PdfType.DOCUMENT, emptyList())
                         }
-                        dao.upsert(PdfMetadataEntity(uriStr, name, meta.first, meta.second, lastModified, meta.third, meta.fourth.joinToString(",")))
+                        dao.upsert(PdfMetadataEntity(uriStr, name, meta.first, meta.second.joinToString(";"), lastModified, meta.third, meta.fourth.joinToString(",")))
                         meta
                     }
-                    pdfs.add(FileSystemItem.PdfItem(PdfFile(uri = file.uri, name = name, title = title, author = author, lastModified = lastModified, type = type, projects = projects)))
+                    pdfs.add(FileSystemItem.PdfItem(PdfFile(uri = file.uri, name = name, title = title, authors = authors, lastModified = lastModified, type = type, projects = projects)))
                 }
             }
         }
@@ -224,14 +224,14 @@ class PdfRepository(private val context: Context) {
         deleted
     }
 
-    suspend fun updateMetadata(uri: Uri, title: String, author: String, projects: List<String>): Boolean =
+    suspend fun updateMetadata(uri: Uri, title: String, authors: List<String>, projects: List<String>): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val doc = context.contentResolver.openInputStream(uri)?.use { PDDocument.load(it) }
                     ?: return@withContext false
                 val info = doc.documentInformation
                 info.title = title.ifBlank { null }
-                info.author = author.ifBlank { null }
+                info.author = authors.joinToString("; ").ifBlank { null }
                 writeProjectsToXmp(doc, projects)
                 save(doc, uri)
                 doc.close()
@@ -240,7 +240,7 @@ class PdfRepository(private val context: Context) {
                 val existingEntity = dao.getByUri(uriStr)
                 val existingName = existingEntity?.name ?: ""
                 val existingType = existingEntity?.type ?: PdfType.DOCUMENT
-                dao.upsert(PdfMetadataEntity(uriStr, existingName, title.ifBlank { "" }, author.ifBlank { "" }, lastModified, existingType, projects.joinToString(",")))
+                dao.upsert(PdfMetadataEntity(uriStr, existingName, title.ifBlank { "" }, authors.joinToString(";"), lastModified, existingType, projects.joinToString(",")))
                 true
             } catch (e: Exception) {
                 false
