@@ -202,6 +202,64 @@ class PdfRepository(private val context: Context) {
         dir.createDirectory(name) != null
     }
 
+    suspend fun syncWithFilesystem(rootUri: Uri) = withContext(Dispatchers.IO) {
+        // Collect all PDFs from the filesystem recursively
+        val found = mutableMapOf<String, DocumentFile>() // uri string -> DocumentFile
+        fun scanDir(dir: DocumentFile) {
+            for (file in dir.listFiles().filter { it.name?.startsWith(".") != true }) {
+                when {
+                    file.isDirectory -> scanDir(file)
+                    file.isFile && file.type == "application/pdf" -> found[file.uri.toString()] = file
+                }
+            }
+        }
+        val root = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext
+        scanDir(root)
+
+        // Remove DB entries whose files no longer exist
+        val dbUris = dao.getAll().map { it.uri }.toSet()
+        for (uriStr in dbUris - found.keys) {
+            dao.deleteByUri(uriStr)
+        }
+
+        // Add/update entries for files not in DB or with changed lastModified
+        for ((uriStr, file) in found) {
+            val name = file.name ?: "Untitled.pdf"
+            val lastModified = file.lastModified()
+            val cached = dao.getByUri(uriStr)
+            if (cached != null && cached.lastModified == lastModified) continue
+            val (title, authors, type, projects) = try {
+                context.contentResolver.openInputStream(file.uri)?.use { stream ->
+                    val doc = PDDocument.load(stream)
+                    val info = doc.documentInformation
+                    val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
+                    val a = info?.author?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+                    val tp = if (info?.creator == "Margin") PdfType.NOTE else PdfType.DOCUMENT
+                    val pr = readProjectsFromXmp(doc)
+                    doc.close()
+                    Quad(t, a, tp, pr)
+                } ?: Quad("", emptyList(), PdfType.DOCUMENT, emptyList())
+            } catch (e: Exception) {
+                Quad("", emptyList<String>(), PdfType.DOCUMENT, emptyList())
+            }
+            dao.upsert(PdfMetadataEntity(uriStr, name, title, authors.joinToString(";"), lastModified, type, projects.joinToString(",")))
+        }
+    }
+
+    suspend fun getAllPdfs(): List<PdfFile> = withContext(Dispatchers.IO) {
+        dao.getAll().map { entity ->
+            PdfFile(
+                uri = Uri.parse(entity.uri),
+                name = entity.name,
+                title = entity.title,
+                authors = entity.author.split(";").map { it.trim() }.filter { it.isNotBlank() },
+                lastModified = entity.lastModified,
+                type = entity.type,
+                projects = entity.projects.split(",").filter { it.isNotBlank() }
+            )
+        }
+    }
+
     suspend fun importPdf(sourceUri: Uri, rootUri: Uri, pathFromRoot: List<String>): Boolean = withContext(Dispatchers.IO) {
         try {
             val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext false
@@ -212,6 +270,22 @@ class PdfRepository(private val context: Context) {
                     input.copyTo(output)
                 }
             }
+            val lastModified = destFile.lastModified()
+            val (title, authors, type, projects) = try {
+                context.contentResolver.openInputStream(destFile.uri)?.use { stream ->
+                    val doc = PDDocument.load(stream)
+                    val info = doc.documentInformation
+                    val t = info?.title?.takeIf { it.isNotBlank() } ?: ""
+                    val a = info?.author?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+                    val tp = if (info?.creator == "Margin") PdfType.NOTE else PdfType.DOCUMENT
+                    val pr = readProjectsFromXmp(doc)
+                    doc.close()
+                    Quad(t, a, tp, pr)
+                } ?: Quad("", emptyList(), PdfType.DOCUMENT, emptyList())
+            } catch (e: Exception) {
+                Quad("", emptyList<String>(), PdfType.DOCUMENT, emptyList())
+            }
+            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, title, authors.joinToString(";"), lastModified, type, projects.joinToString(",")))
             true
         } catch (e: Exception) {
             false
@@ -222,6 +296,10 @@ class PdfRepository(private val context: Context) {
         val deleted = DocumentFile.fromSingleUri(context, uri)?.delete() ?: false
         if (deleted) dao.deleteByUri(uri.toString())
         deleted
+    }
+
+    suspend fun removeFromDatabase(uri: Uri) = withContext(Dispatchers.IO) {
+        dao.deleteByUri(uri.toString())
     }
 
     suspend fun updateMetadata(uri: Uri, title: String, authors: List<String>, projects: List<String>): Boolean =

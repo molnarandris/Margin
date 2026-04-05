@@ -14,4 +14,7 @@ interface PdfMetadataDao {
 
     @Query("DELETE FROM pdf_metadata WHERE uri = :uri")
     suspend fun deleteByUri(uri: String)
+
+    @Query("SELECT * FROM pdf_metadata")
+    suspend fun getAll(): List<PdfMetadataEntity>
 }
