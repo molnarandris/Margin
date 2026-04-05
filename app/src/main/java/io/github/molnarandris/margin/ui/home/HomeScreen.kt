@@ -28,7 +28,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
@@ -111,17 +110,6 @@ fun HomeScreen(
         viewModel.navigateUp()
     }
 
-    var showCreateFolderDialog by remember { mutableStateOf(false) }
-
-    if (showCreateFolderDialog) {
-        CreateFolderDialog(
-            onConfirm = { name ->
-                viewModel.createDirectory(name)
-                showCreateFolderDialog = false
-            },
-            onDismiss = { showCreateFolderDialog = false }
-        )
-    }
 
     Scaffold(
         topBar = {
@@ -160,9 +148,6 @@ fun HomeScreen(
                                     } else null
                                 )
                             }
-                        }
-                        IconButton(onClick = { showCreateFolderDialog = true }) {
-                            Icon(Icons.Default.CreateNewFolder, contentDescription = "Create folder")
                         }
                     }
                     IconButton(onClick = onOpenSettings) {
@@ -228,33 +213,6 @@ fun HomeScreen(
     }
 }
 
-@Composable
-private fun CreateFolderDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
-    var name by rememberSaveable { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("New folder") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Folder name") },
-                singleLine = true
-            )
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { if (name.isNotBlank()) onConfirm(name.trim()) },
-                enabled = name.isNotBlank()
-            ) {
-                Text("Create")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
-}
 
 @Composable
 private fun SplitFab(onImport: () -> Unit, onNewNote: () -> Unit) {
