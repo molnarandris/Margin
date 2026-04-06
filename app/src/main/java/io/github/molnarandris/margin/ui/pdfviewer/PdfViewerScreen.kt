@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
@@ -161,6 +162,7 @@ fun PdfViewerScreen(
     dirUri: Uri,
     docId: String,
     onBack: () -> Unit,
+    onOpenPdf: (dirUri: Uri, docId: String) -> Unit = { _, _ -> },
     viewModel: PdfViewerViewModel = viewModel()
 ) {
     LaunchedEffect(dirUri, docId) {
@@ -175,6 +177,7 @@ fun PdfViewerScreen(
     val penThickness by viewModel.penThickness.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
+    val previousDocParams by viewModel.previousDocParams.collectAsState()
     val pendingScrollToPage by viewModel.pendingScrollToPage.collectAsState()
     val outline by viewModel.outline.collectAsState()
     var isOutlineVisible by remember { mutableStateOf(false) }
@@ -432,40 +435,48 @@ fun PdfViewerScreen(
                             modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester)
                         )
                     } else {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(0.dp),
-                            modifier = Modifier.pointerInput(Unit) {
-                                detectTapGestures(onLongPress = {
-                                    titleEditText  = pdfTitle
-                                    authorChips    = pdfAuthors
-                                    newAuthorText  = ""
-                                    projectChips   = pdfProjects
-                                    newProjectText = ""
-                                    isEditDialogVisible = true
-                                })
-                            }
-                        ) {
-                            Text(
-                                text = if (pdfTitle.isNotEmpty()) pdfTitle else "No Title",
-                                fontSize = 16.sp,
-                                lineHeight = 18.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            val totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0
-                            val pageInfo = if (totalPages > 0) "${currentPage + 1} / $totalPages" else ""
-                            val subtitle = listOfNotNull(
-                                pdfAuthors.joinToString(", ").ifEmpty { null },
-                                pageInfo.ifEmpty { null }
-                            ).joinToString("  ·  ")
-                            if (subtitle.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(0.dp),
+                                modifier = Modifier.weight(1f, fill = false).pointerInput(Unit) {
+                                    detectTapGestures(onLongPress = {
+                                        titleEditText  = pdfTitle
+                                        authorChips    = pdfAuthors
+                                        newAuthorText  = ""
+                                        projectChips   = pdfProjects
+                                        newProjectText = ""
+                                        isEditDialogVisible = true
+                                    })
+                                }
+                            ) {
                                 Text(
-                                    text = subtitle,
-                                    fontSize = 12.sp,
-                                    lineHeight = 14.sp,
+                                    text = if (pdfTitle.isNotEmpty()) pdfTitle else "No Title",
+                                    fontSize = 16.sp,
+                                    lineHeight = 18.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                val totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0
+                                val pageInfo = if (totalPages > 0) "${currentPage + 1} / $totalPages" else ""
+                                val subtitle = listOfNotNull(
+                                    pdfAuthors.joinToString(", ").ifEmpty { null },
+                                    pageInfo.ifEmpty { null }
+                                ).joinToString("  ·  ")
+                                if (subtitle.isNotEmpty()) {
+                                    Text(
+                                        text = subtitle,
+                                        fontSize = 12.sp,
+                                        lineHeight = 14.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            val prevDoc = previousDocParams
+                            if (prevDoc != null) {
+                                IconButton(onClick = { onOpenPdf(prevDoc.first, prevDoc.second) }) {
+                                    Icon(Icons.Default.SwapHoriz, contentDescription = "Switch to previous document")
+                                }
                             }
                         }
                     }

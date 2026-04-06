@@ -2,6 +2,7 @@ package io.github.molnarandris.margin.data
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.tom_roush.pdfbox.cos.COSName
@@ -11,7 +12,9 @@ import com.tom_roush.pdfbox.pdmodel.common.PDMetadata
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -58,6 +61,10 @@ class PdfRepository(private val context: Context) {
 
         private val _pdfOpenedFlow = MutableSharedFlow<Pair<Uri, Long>>(extraBufferCapacity = 1)
         val pdfOpenedFlow: SharedFlow<Pair<Uri, Long>> = _pdfOpenedFlow
+
+        private var _currentDocId: String? = null
+        private val _previousDocParams = MutableStateFlow<Pair<Uri, String>?>(null)
+        val previousDocParams: StateFlow<Pair<Uri, String>?> = _previousDocParams
 
         private const val MARGIN_NS = "http://github.com/molnarandris/margin/xmp/1.0/"
         private const val RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -266,10 +273,15 @@ class PdfRepository(private val context: Context) {
         }
     }
 
-    suspend fun recordOpen(uri: Uri) = withContext(Dispatchers.IO) {
+    suspend fun recordOpen(dirUri: Uri, docUri: Uri) = withContext(Dispatchers.IO) {
         val timestamp = System.currentTimeMillis()
-        dao.updateLastOpened(uri.toString(), timestamp)
-        _pdfOpenedFlow.emit(uri to timestamp)
+        dao.updateLastOpened(docUri.toString(), timestamp)
+        _pdfOpenedFlow.emit(docUri to timestamp)
+        val docId = DocumentsContract.getDocumentId(docUri)
+        if (_currentDocId != docId) {
+            _currentDocId?.let { _previousDocParams.value = dirUri to it }
+            _currentDocId = docId
+        }
     }
 
     suspend fun importPdf(sourceUri: Uri, rootUri: Uri, pathFromRoot: List<String>): Boolean = withContext(Dispatchers.IO) {

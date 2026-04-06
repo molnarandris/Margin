@@ -250,6 +250,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _canRedo = MutableStateFlow(false)
     val canUndo: StateFlow<Boolean> = _canUndo.asStateFlow()
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
+    val previousDocParams: StateFlow<Pair<Uri, String>?> = PdfRepository.previousDocParams
 
     private fun pushUndo(action: UndoableAction) {
         if (isUndoRedoInProgress) return
@@ -386,7 +387,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }
             loadedFileName = fileName
             val lastPage = prefsRepo.getLastPage(uri) ?: 0
-            pdfRepository.recordOpen(uri)
+            pdfRepository.recordOpen(dirUri, uri)
             renderPages(dirUri, docId, fileName, lastPage)
         }
     }

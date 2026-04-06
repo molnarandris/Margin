@@ -84,7 +84,14 @@ fun MarginApp() {
             PdfViewerScreen(
                 dirUri = dirUri,
                 docId = docId,
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onOpenPdf = { newDirUri, newDocId ->
+                    val encodedDir = Uri.encode(newDirUri.toString())
+                    val encodedDocId = Uri.encode(newDocId)
+                    navController.navigate("pdf_viewer?dirUri=$encodedDir&docId=$encodedDocId") {
+                        popUpTo("home") { inclusive = false }
+                    }
+                }
             )
         }
     }
