@@ -17,13 +17,14 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-enum class SortOrder { BY_NAME, BY_LAST_MODIFIED }
+enum class SortOrder { BY_NAME, BY_LAST_MODIFIED, BY_LAST_OPENED }
 
 private fun List<FileSystemItem>.applySortOrder(order: SortOrder): List<FileSystemItem> {
     val pdfs = filterIsInstance<FileSystemItem.PdfItem>()
     return when (order) {
         SortOrder.BY_NAME -> pdfs.sortedBy { it.pdf.name }
         SortOrder.BY_LAST_MODIFIED -> pdfs.sortedByDescending { it.pdf.lastModified }
+        SortOrder.BY_LAST_OPENED -> pdfs.sortedByDescending { it.pdf.lastOpened }
     }
 }
 
@@ -55,6 +56,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            PdfRepository.pdfOpenedFlow.collect { (uri, timestamp) ->
+                val state = _uiState.value as? HomeUiState.Ready ?: return@collect
+                val allItems = state.allItems.map { item ->
+                    if (item is FileSystemItem.PdfItem && item.pdf.uri == uri)
+                        FileSystemItem.PdfItem(item.pdf.copy(lastOpened = timestamp))
+                    else item
+                }.applySortOrder(_sortOrder.value)
+                _uiState.value = state.copy(allItems = allItems, items = allItems)
+            }
+        }
         viewModelScope.launch {
             val saved = prefsRepo.getSortOrder()
             if (saved != null) _sortOrder.value = runCatching { SortOrder.valueOf(saved) }.getOrDefault(SortOrder.BY_NAME)

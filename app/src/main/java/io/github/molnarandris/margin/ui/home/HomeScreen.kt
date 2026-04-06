@@ -161,6 +161,13 @@ fun HomeScreen(
                                         { Icon(Icons.Default.Check, contentDescription = null) }
                                     } else null
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Last opened") },
+                                    onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_OPENED); showSortMenu = false },
+                                    trailingIcon = if (sortOrder == SortOrder.BY_LAST_OPENED) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null
+                                )
                             }
                         }
                     }

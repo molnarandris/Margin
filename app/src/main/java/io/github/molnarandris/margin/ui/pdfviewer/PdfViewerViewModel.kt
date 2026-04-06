@@ -386,6 +386,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }
             loadedFileName = fileName
             val lastPage = prefsRepo.getLastPage(uri) ?: 0
+            pdfRepository.recordOpen(uri)
             renderPages(dirUri, docId, fileName, lastPage)
         }
     }

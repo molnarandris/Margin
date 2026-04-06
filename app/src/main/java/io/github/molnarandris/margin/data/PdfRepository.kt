@@ -10,6 +10,8 @@ import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDMetadata
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -25,7 +27,7 @@ import javax.xml.transform.TransformerFactory
 import javax.xml.transform.dom.DOMSource
 import javax.xml.transform.stream.StreamResult
 
-data class PdfFile(val uri: Uri, val name: String, val title: String = "", val authors: List<String> = emptyList(), val lastModified: Long = 0L, val type: PdfType = PdfType.DOCUMENT, val projects: List<String> = emptyList())
+data class PdfFile(val uri: Uri, val name: String, val title: String = "", val authors: List<String> = emptyList(), val lastModified: Long = 0L, val type: PdfType = PdfType.DOCUMENT, val projects: List<String> = emptyList(), val lastOpened: Long = 0L)
 
 sealed class FileSystemItem {
     data class PdfItem(val pdf: PdfFile) : FileSystemItem()
@@ -53,6 +55,9 @@ class PdfRepository(private val context: Context) {
         private val fileWriteLocks = ConcurrentHashMap<String, Mutex>()
         fun fileWriteLockFor(uri: Uri): Mutex =
             fileWriteLocks.getOrPut(uri.toString()) { Mutex() }
+
+        private val _pdfOpenedFlow = MutableSharedFlow<Pair<Uri, Long>>(extraBufferCapacity = 1)
+        val pdfOpenedFlow: SharedFlow<Pair<Uri, Long>> = _pdfOpenedFlow
 
         private const val MARGIN_NS = "http://github.com/molnarandris/margin/xmp/1.0/"
         private const val RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -255,9 +260,16 @@ class PdfRepository(private val context: Context) {
                 authors = entity.author.split(";").map { it.trim() }.filter { it.isNotBlank() },
                 lastModified = entity.lastModified,
                 type = entity.type,
-                projects = entity.projects.split(",").filter { it.isNotBlank() }
+                projects = entity.projects.split(",").filter { it.isNotBlank() },
+                lastOpened = entity.lastOpened
             )
         }
+    }
+
+    suspend fun recordOpen(uri: Uri) = withContext(Dispatchers.IO) {
+        val timestamp = System.currentTimeMillis()
+        dao.updateLastOpened(uri.toString(), timestamp)
+        _pdfOpenedFlow.emit(uri to timestamp)
     }
 
     suspend fun importPdf(sourceUri: Uri, rootUri: Uri, pathFromRoot: List<String>): Boolean = withContext(Dispatchers.IO) {
