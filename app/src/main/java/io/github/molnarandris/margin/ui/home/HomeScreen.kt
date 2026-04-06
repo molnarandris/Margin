@@ -1,6 +1,7 @@
 package io.github.molnarandris.margin.ui.home
 
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
@@ -221,6 +222,7 @@ fun HomeScreen(
                     } else {
                         ContentList(
                             items = state.items,
+                            rootUri = state.rootUri,
                             onPdfClick = { pdf ->
                                 scope.launch {
                                     val exists = withContext(Dispatchers.IO) {
@@ -274,10 +276,22 @@ private fun SplitFab(onImport: () -> Unit, onNewNote: () -> Unit) {
     }
 }
 
+private fun relativePath(pdfUri: Uri, rootUri: Uri): String {
+    return try {
+        val docId  = DocumentsContract.getDocumentId(pdfUri)
+        val treeId = DocumentsContract.getTreeDocumentId(rootUri)
+        if (docId.startsWith("$treeId/")) docId.removePrefix("$treeId/")
+        else pdfUri.lastPathSegment ?: docId
+    } catch (_: Exception) {
+        pdfUri.lastPathSegment ?: pdfUri.toString()
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ContentList(
     items: List<FileSystemItem>,
+    rootUri: Uri,
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
     onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>) -> Unit,
@@ -414,7 +428,7 @@ private fun ContentList(
             ).joinToString(" — ")
             Box {
                 ListItem(
-                    headlineContent = { Text(pdf.name) },
+                    headlineContent = { Text(relativePath(pdf.uri, rootUri)) },
                     supportingContent = if (meta.isNotBlank()) ({ Text(meta) }) else null,
                     modifier = Modifier
                         .fillMaxWidth()
