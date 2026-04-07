@@ -184,6 +184,23 @@ class PdfEditor(
 
     // ---- Data Extraction ----
 
+    /**
+     * Opens the document at [uri], extracts words and highlights for [pageIndex], closes it.
+     * [pageHeight] should be the rendered page height used to flip PDF coordinates to PR space.
+     * Ink strokes are intentionally excluded — in-memory state is authoritative for those.
+     */
+    suspend fun loadPageData(
+        uri: Uri,
+        pageIndex: Int,
+        pageHeight: Float
+    ): Pair<List<TextWord>, List<PdfHighlight>> {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        val words = extractWords(pdDoc, pageIndex)
+        val highlights = extractHighlights(pdDoc, pageIndex, pageHeight)
+        pdDoc.close()
+        return words to highlights
+    }
+
     fun extractAllWords(pdDoc: PDDocument, pageCount: Int): List<List<TextWord>> {
         return try {
             val extractor = WordExtractor(pageCount)

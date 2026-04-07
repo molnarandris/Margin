@@ -855,10 +855,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
             // Re-extract words and highlights only — ink stroke memory is authoritative
-            val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-            val words = pdfEditor.extractWords(pdDoc, pageIndex)
-            val highlights = pdfEditor.extractHighlights(pdDoc, pageIndex, page.height.toFloat())
-            pdDoc.close()
+            val (words, highlights) = pdfEditor.loadPageData(uri, pageIndex, page.height.toFloat())
 
             newPages[pageIndex] = newPages[pageIndex].copy(
                 bitmap = bitmap,
