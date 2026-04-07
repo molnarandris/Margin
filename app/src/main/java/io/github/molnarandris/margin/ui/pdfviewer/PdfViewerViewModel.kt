@@ -11,25 +11,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
-import com.tom_roush.pdfbox.cos.COSArray
-import com.tom_roush.pdfbox.cos.COSDictionary
-import com.tom_roush.pdfbox.cos.COSFloat
-import com.tom_roush.pdfbox.cos.COSNumber
-import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
-import com.tom_roush.pdfbox.pdmodel.PDPage
-import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
-import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
-import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
-import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
-import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
-import com.tom_roush.pdfbox.pdmodel.common.PDStream
-import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
-import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
-import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
-import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown
-import com.tom_roush.pdfbox.text.PDFTextStripper
-import com.tom_roush.pdfbox.text.TextPosition
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.cancel
@@ -46,7 +28,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import android.content.Context
 import io.github.molnarandris.margin.data.PdfRepository
 import io.github.molnarandris.margin.data.PreferencesRepository
 import java.io.File
@@ -57,14 +38,6 @@ sealed class LinkTarget {
 }
 
 data class PdfLink(val bounds: List<RectF>, val target: LinkTarget)
-
-data class TextChar(val text: String, val bounds: RectF)
-
-data class TextWord(
-    val text: String,
-    val bounds: RectF,   // PR space (top-left origin)
-    val chars: List<TextChar>
-)
 
 data class PdfHighlight(
     val pageIndex: Int,
@@ -104,18 +77,6 @@ data class InkStroke(
     val roundCap: Boolean = false
 )
 
-sealed class UndoableAction {
-    data class StrokeAdded(val pageIndex: Int, val stroke: InkStroke) : UndoableAction()
-    data class StrokesErased(val pageIndex: Int, val strokes: List<InkStroke>) : UndoableAction()
-    data class PageJumped(val fromPage: Int, val toPage: Int) : UndoableAction()
-    // Highlights identified by bounds (not annotationIndex, which can drift after add/delete)
-    data class HighlightAdded(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
-    data class HighlightDeleted(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
-    data class AnnotationEdited(val pageIndex: Int, val bounds: List<RectF>, val oldNote: String?, val newNote: String?) : UndoableAction()
-    data class MetadataChanged(val oldTitle: String, val newTitle: String, val oldAuthors: List<String>, val newAuthors: List<String>, val oldProjects: List<String>, val newProjects: List<String>) : UndoableAction()
-    data class StrokesMoved(val pageIndex: Int, val originalStrokes: List<InkStroke>, val movedStrokes: List<InkStroke>) : UndoableAction()
-}
-
 data class PdfPage(
     val bitmap: Bitmap,
     val nativeWidth: Int,
@@ -130,60 +91,6 @@ sealed class PdfViewerUiState {
     data class Ready(val pages: List<PdfPage>, val title: String = "", val authors: List<String> = emptyList(), val projects: List<String> = emptyList()) : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
     data class CorruptedWithBackup(val backupFile: File, val uri: Uri) : PdfViewerUiState()
-}
-
-private class WordExtractor(private val pageCount: Int) : PDFTextStripper() {
-    val wordsByPage: Array<MutableList<TextWord>> = Array(pageCount) { mutableListOf() }
-    private val currentWordChars = mutableListOf<TextPosition>()
-
-    override fun writeString(text: String, positions: List<TextPosition>) {
-        for (pos in positions) {
-            if (pos.unicode.isBlank()) flushWord() else currentWordChars.add(pos)
-        }
-        flushWord()
-    }
-
-    private fun flushWord() {
-        if (currentWordChars.isEmpty()) return
-        val pageIdx = currentPageNo - 1  // PDFTextStripper is 1-based
-        if (pageIdx !in wordsByPage.indices) { currentWordChars.clear(); return }
-        val text   = currentWordChars.joinToString("") { it.unicode }
-        val left   = currentWordChars.minOf { it.x }
-        val right  = currentWordChars.maxOf { it.x + it.width }
-        val top    = currentWordChars.minOf { it.y }
-        val bottom = currentWordChars.maxOf { it.y + it.height }
-        val chars  = currentWordChars.map { pos ->
-            TextChar(pos.unicode, RectF(pos.x, pos.y, pos.x + pos.width, pos.y + pos.height))
-        }
-        wordsByPage[pageIdx].add(TextWord(text, RectF(left, top, right, bottom), chars))
-        currentWordChars.clear()
-    }
-}
-
-private class SinglePageWordExtractor : PDFTextStripper() {
-    val words = mutableListOf<TextWord>()
-    private val currentWordChars = mutableListOf<TextPosition>()
-
-    override fun writeString(text: String, positions: List<TextPosition>) {
-        for (pos in positions) {
-            if (pos.unicode.isBlank()) flushWord() else currentWordChars.add(pos)
-        }
-        flushWord()
-    }
-
-    private fun flushWord() {
-        if (currentWordChars.isEmpty()) return
-        val text   = currentWordChars.joinToString("") { it.unicode }
-        val left   = currentWordChars.minOf { it.x }
-        val right  = currentWordChars.maxOf { it.x + it.width }
-        val top    = currentWordChars.minOf { it.y }
-        val bottom = currentWordChars.maxOf { it.y + it.height }
-        val chars  = currentWordChars.map { pos ->
-            TextChar(pos.unicode, RectF(pos.x, pos.y, pos.x + pos.width, pos.y + pos.height))
-        }
-        words.add(TextWord(text, RectF(left, top, right, bottom), chars))
-        currentWordChars.clear()
-    }
 }
 
 class PdfViewerViewModel(application: Application) : AndroidViewModel(application) {
@@ -221,6 +128,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val prefsRepo = PreferencesRepository(application)
     private val pdfRepository = PdfRepository(application)
+    private val pdfEditor = PdfEditor(application, pdfRepository)
 
     init {
         viewModelScope.launch {
@@ -434,17 +342,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     renderer?.close(); pfd?.close()
                     renderer = null; pfd = null
 
-                    val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                    val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
-                    val newPage = PDPage(mediaBox)
-                    newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
-                    if (insertBeforeIndex >= pdDoc.numberOfPages) {
-                        pdDoc.addPage(newPage)
-                    } else {
-                        pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
-                    }
-                    pdfRepository.save(pdDoc, uri)
-                    pdDoc.close()
+                    pdfEditor.insertPageInDoc(uri, insertBeforeIndex)
 
                     // Silently reopen renderer — no Loading state, no renderPages()
                     val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
@@ -462,17 +360,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     renderer?.close(); pfd?.close()
                     renderer = null; pfd = null
 
-                    val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                    val mediaBox = pdDoc.getPage(insertBeforeIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
-                    val newPage = PDPage(mediaBox)
-                    newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
-                    if (insertBeforeIndex >= pdDoc.numberOfPages) {
-                        pdDoc.addPage(newPage)
-                    } else {
-                        pdDoc.pages.insertBefore(newPage, pdDoc.getPage(insertBeforeIndex))
-                    }
-                    pdfRepository.save(pdDoc, uri)
-                    pdDoc.close()
+                    pdfEditor.insertPageInDoc(uri, insertBeforeIndex)
                 }
                 withContext(Dispatchers.Main) {
                     _pendingScrollToPage.value = insertBeforeIndex
@@ -513,10 +401,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                pdDoc.removePage(pageIndex)
-                pdfRepository.save(pdDoc, uri)
-                pdDoc.close()
+                pdfEditor.deletePageFromDoc(uri, pageIndex)
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd
@@ -635,7 +520,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     fun addHighlight(pageIndex: Int, selectedChars: List<TextChar>) {
         // Phase 1: compute bounds and show highlight immediately (no IO)
         val sortedChars = selectedChars.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-        val lines = groupCharsIntoLines(sortedChars)
+        val lines = pdfEditor.groupCharsIntoLines(sortedChars)
         val lineBounds = lines.map { lineChars ->
             val left  = lineChars.minOf { it.bounds.left }
             val right = lineChars.maxOf { it.bounds.right }
@@ -661,42 +546,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                val pdPage = pdDoc.getPage(pageIndex)
-                val pageH = pdPage.mediaBox.height
+                val newHighlights = pdfEditor.addHighlightAnnotation(uri, pageIndex, lineBounds, null)
 
-                val quads = FloatArray(lines.size * 8)
-                lines.forEachIndexed { i, lineChars ->
-                    val left        = lineChars.minOf { it.bounds.left }
-                    val right       = lineChars.maxOf { it.bounds.right }
-                    val prVisualTop = lineChars.minOf { it.bounds.top - it.bounds.height() * 1.6f }
-                    val prVisualBot = lineChars.maxOf { it.bounds.top + it.bounds.height() * 0.5f }
-                    val pbTop = pageH - prVisualTop
-                    val pbBot = pageH - prVisualBot
-                    val base = i * 8
-                    quads[base+0] = left;  quads[base+1] = pbTop
-                    quads[base+2] = right; quads[base+3] = pbTop
-                    quads[base+4] = left;  quads[base+5] = pbBot
-                    quads[base+6] = right; quads[base+7] = pbBot
-                }
-                val allLeft      = selectedChars.minOf { it.bounds.left }
-                val allRight     = selectedChars.maxOf { it.bounds.right }
-                val allVisualTop = selectedChars.minOf { it.bounds.top - it.bounds.height() * 1.6f }
-                val allVisualBot = selectedChars.maxOf { it.bounds.top + it.bounds.height() * 0.5f }
-                val ann = PDAnnotationTextMarkup(PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT).apply {
-                    quadPoints = quads
-                    color = PDColor(floatArrayOf(1f, 1f, 0f), PDDeviceRGB.INSTANCE)
-                    rectangle = PDRectangle(allLeft, pageH - allVisualBot, allRight - allLeft, allVisualBot - allVisualTop)
-                }
-                pdPage.annotations.add(ann)
-
-                pdfRepository.save(pdDoc, uri)
-
-                // Re-extract highlights to get correct annotationIndex (needed for deletion)
-                val newHighlights = extractHighlights(pdDoc, pageIndex, pageH)
-                pdDoc.close()
-
-                // Reopen renderer/pfd for future rendering
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd
                 renderer = PdfRenderer(newPfd)
@@ -713,89 +564,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
         }
-    }
-
-    // Builds and adds a single ink annotation to an already-open PDDocument (does NOT save)
-    private fun addInkAnnotationToDoc(pdDoc: PDDocument, pageIndex: Int, stroke: InkStroke) {
-        val pdPage = pdDoc.getPage(pageIndex)
-        val pageW = pdPage.mediaBox.width
-        val pageH = pdPage.mediaBox.height
-
-        val normalized = stroke.points
-        val coords = FloatArray(normalized.size * 2) { i ->
-            val pt = normalized[i / 2]
-            if (i % 2 == 0) pt.x * pageW else pageH - pt.y * pageH
-        }
-        val minX = coords.filterIndexed { i, _ -> i % 2 == 0 }.min()
-        val minY = coords.filterIndexed { i, _ -> i % 2 != 0 }.min()
-        val maxX = coords.filterIndexed { i, _ -> i % 2 == 0 }.max()
-        val maxY = coords.filterIndexed { i, _ -> i % 2 != 0 }.max()
-
-        val strokeWidth = stroke.thickness.multiplier * 1.5f
-        val pad = strokeWidth * 0.7f
-
-        val innerList = COSArray().apply { coords.forEach { add(COSFloat(it)) } }
-        val outerList = COSArray().apply { add(innerList) }
-        val rectArr = COSArray().apply {
-            listOf(minX - pad, minY - pad, maxX + pad, maxY + pad).forEach { add(COSFloat(it)) }
-        }
-        val colorArr = COSArray().apply {
-            stroke.color.pdfRgb.forEach { add(COSFloat(it)) }
-        }
-        val bsDict = COSDictionary().apply {
-            setName(COSName.TYPE, "Border")
-            setName(COSName.SUBTYPE, "S")
-            setItem(COSName.getPDFName("W"), COSFloat(stroke.thickness.multiplier * 1.5f))
-        }
-
-        val rgb = stroke.color.pdfRgb
-        val apContent = buildString {
-            append("q ")
-            append("1 J ")  // round line cap
-            append("1 j ")  // round line join
-            append("%.4f w ".format(strokeWidth))
-            append("%.4f %.4f %.4f RG ".format(rgb[0], rgb[1], rgb[2]))
-            for (i in coords.indices step 2) {
-                val op = if (i == 0) "m" else "l"
-                append("%.4f %.4f $op ".format(coords[i], coords[i + 1]))
-            }
-            append("S Q")
-        }.toByteArray()
-        val apStream = PDStream(pdDoc)
-        apStream.createOutputStream().use { it.write(apContent) }
-        val apCos = apStream.cosObject
-        apCos.setName(COSName.TYPE, "XObject")
-        apCos.setName(COSName.SUBTYPE, "Form")
-        apCos.setItem(COSName.BBOX, COSArray().apply {
-            listOf(minX - pad, minY - pad, maxX + pad, maxY + pad).forEach { add(COSFloat(it)) }
-        })
-        val apDict = COSDictionary().apply { setItem(COSName.N, apCos) }
-
-        val annDict = COSDictionary().apply {
-            setName(COSName.TYPE, "Annot")
-            setName(COSName.SUBTYPE, "Ink")
-            setItem(COSName.INKLIST, outerList)
-            setItem(COSName.RECT, rectArr)
-            setItem(COSName.getPDFName("C"), colorArr)
-            setItem(COSName.getPDFName("BS"), bsDict)
-            setItem(COSName.AP, apDict)
-            setString(COSName.NM, "ink-${stroke.id}")
-        }
-        pdPage.annotations.add(PDAnnotationUnknown(annDict))
-    }
-
-    // Must be called within renderMutex.withLock, with renderer/pfd already closed
-    private suspend fun writeInkStrokesToPdf(
-        uri: Uri, app: Application, strokesByPage: Map<Int, List<InkStroke>>
-    ) {
-        val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-        strokesByPage.forEach { (pageIndex, strokes) ->
-            strokes.forEach { stroke -> addInkAnnotationToDoc(pdDoc, pageIndex, stroke) }
-        }
-        pdfRepository.save(pdDoc, uri)
-        pdDoc.close()
-        pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return
-        renderer = PdfRenderer(pfd!!)
     }
 
     private fun flushPendingInkStrokes() {
@@ -816,7 +584,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 if (filtered.isEmpty()) return@withLock
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
-                writeInkStrokesToPdf(uri, app, filtered)
+                pdfEditor.writeInkStrokesToPdf(uri, filtered)
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
             }
         }
     }
@@ -863,23 +634,23 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             renderMutex.withLock {
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                // Add any remaining pending strokes first
-                remainingPending.forEach { (pi, strokes) ->
+
+                val filteredPending = remainingPending.mapValues { (pi, strokes) ->
                     val current = _completedInkStrokes.value[pi].orEmpty()
                     strokes.filter { s -> current.any { it.id == s.id } }
-                        .forEach { s -> addInkAnnotationToDoc(pdDoc, pi, s) }
-                }
-                // Then do the move for in-PDF strokes
-                val pdPage = pdDoc.getPage(pageIndex)
-                val origNames = inPdfOriginals.map { "ink-${it.id}" }.toSet()
-                val annotations = pdPage.annotations
-                annotations.removeAll(annotations.filter { it.annotationName in origNames })
-                for (s in inPdfMoved) addInkAnnotationToDoc(pdDoc, pageIndex, s)
-                pdfRepository.save(pdDoc, uri)
-                pdDoc.close()
-                pfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
-                renderer = PdfRenderer(pfd!!)
+                }.filter { it.value.isNotEmpty() }
+
+                pdfEditor.removeInkAnnotationsAndAdd(
+                    uri = uri,
+                    pageIndex = pageIndex,
+                    namesToRemove = inPdfOriginals.map { "ink-${it.id}" }.toSet(),
+                    strokesToAdd = inPdfMoved,
+                    alsoWritePending = filteredPending
+                )
+
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
             }
         }
     }
@@ -949,21 +720,18 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                // Add any remaining pending strokes first
-                remainingPending.forEach { (pi, strokes) ->
+                val filteredPending = remainingPending.mapValues { (pi, strokes) ->
                     val current = _completedInkStrokes.value[pi].orEmpty()
                     strokes.filter { s -> current.any { it.id == s.id } }
-                        .forEach { s -> addInkAnnotationToDoc(pdDoc, pi, s) }
-                }
-                // Then erase the strokes already in the PDF
-                val pdPage = pdDoc.getPage(pageIndex)
-                val namesToRemove = idsInPdf.map { "ink-$it" }.toSet()
-                val annotations = pdPage.annotations
-                annotations.removeAll(annotations.filter { it.annotationName in namesToRemove })
+                }.filter { it.value.isNotEmpty() }
 
-                pdfRepository.save(pdDoc, uri)
-                pdDoc.close()
+                pdfEditor.removeInkAnnotationsAndAdd(
+                    uri = uri,
+                    pageIndex = pageIndex,
+                    namesToRemove = idsInPdf.map { "ink-$it" }.toSet(),
+                    strokesToAdd = emptyList(),
+                    alsoWritePending = filteredPending
+                )
 
                 reloadPage(uri, app, pageIndex)
             }
@@ -1004,14 +772,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                val pdPage = pdDoc.getPage(highlight.pageIndex)
-                val annotations = pdPage.annotations
-                if (highlight.annotationIndex in annotations.indices) {
-                    annotations.removeAt(highlight.annotationIndex)
-                }
-                pdfRepository.save(pdDoc, uri)
-                pdDoc.close()
+                pdfEditor.deleteHighlightAnnotation(uri, highlight.pageIndex, highlight.annotationIndex)
 
                 reloadPage(uri, app, highlight.pageIndex)
             }
@@ -1036,44 +797,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                val pdPage = pdDoc.getPage(pageIndex)
-                val pageH = pdPage.mediaBox.height
-
-                // Reconstruct quad points from stored bounds (PR space → PDF space)
-                val quads = FloatArray(bounds.size * 8)
-                bounds.forEachIndexed { i, rect ->
-                    val pbTop = pageH - rect.top
-                    val pbBot = pageH - rect.bottom
-                    val base = i * 8
-                    quads[base+0] = rect.left;  quads[base+1] = pbTop
-                    quads[base+2] = rect.right; quads[base+3] = pbTop
-                    quads[base+4] = rect.left;  quads[base+5] = pbBot
-                    quads[base+6] = rect.right; quads[base+7] = pbBot
-                }
-                val allLeft   = bounds.minOf { it.left }
-                val allRight  = bounds.maxOf { it.right }
-                val allTop    = bounds.minOf { it.top }
-                val allBottom = bounds.maxOf { it.bottom }
-                val pbAllTop  = pageH - allTop
-                val pbAllBot  = pageH - allBottom
-
-                val ann = PDAnnotationTextMarkup(PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT).apply {
-                    quadPoints = quads
-                    color = PDColor(floatArrayOf(1f, 1f, 0f), PDDeviceRGB.INSTANCE)
-                    rectangle = PDRectangle(allLeft, pbAllBot, allRight - allLeft, pbAllTop - pbAllBot)
-                    if (!note.isNullOrBlank()) contents = note
-                }
-                pdPage.annotations.add(ann)
-
-                pdfRepository.save(pdDoc, uri)
-                val newHighlights = extractHighlights(pdDoc, pageIndex, pageH)
-                pdDoc.close()
+                val newHighlights = pdfEditor.addHighlightAnnotation(uri, pageIndex, bounds, note)
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd
                 renderer = PdfRenderer(newPfd)
 
+                // Replace optimistic highlight with real one (correct annotationIndex)
                 _uiState.update { state ->
                     if (state !is PdfViewerUiState.Ready) return@update state
                     val newPages = state.pages.toMutableList()
@@ -1098,30 +828,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                val ann = pdDoc.getPage(highlight.pageIndex)
-                    .annotations.getOrNull(highlight.annotationIndex)
-                if (ann != null) {
-                    if (note.isBlank()) ann.getCOSObject().removeItem(COSName.CONTENTS)
-                    else ann.contents = note
-                }
-                pdfRepository.save(pdDoc, uri)
-                pdDoc.close()
+                pdfEditor.setHighlightNoteInPdf(uri, highlight.pageIndex, highlight.annotationIndex, note)
 
                 reloadPage(uri, app, highlight.pageIndex)
             }
         }
-    }
-
-    private fun groupCharsIntoLines(chars: List<TextChar>): List<List<TextChar>> {
-        if (chars.isEmpty()) return emptyList()
-        val threshold = chars.map { it.bounds.height() }.average().toFloat() * 0.5f
-        val lines = mutableListOf<MutableList<TextChar>>()
-        for (char in chars) {
-            val line = lines.firstOrNull { kotlin.math.abs(it.first().bounds.top - char.bounds.top) < threshold }
-            if (line != null) line.add(char) else lines.add(mutableListOf(char))
-        }
-        return lines
     }
 
     // Must be called while renderMutex is held and renderer/pfd are closed
@@ -1145,8 +856,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
             // Re-extract words and highlights only — ink stroke memory is authoritative
             val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-            val words = extractWords(pdDoc, pageIndex)
-            val highlights = extractHighlights(pdDoc, pageIndex, page.height.toFloat())
+            val words = pdfEditor.extractWords(pdDoc, pageIndex)
+            val highlights = pdfEditor.extractHighlights(pdDoc, pageIndex, page.height.toFloat())
             pdDoc.close()
 
             newPages[pageIndex] = newPages[pageIndex].copy(
@@ -1158,134 +869,6 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
         withContext(Dispatchers.Main) {
             _uiState.value = state.copy(pages = newPages)
-        }
-    }
-
-    private fun extractAllWords(pdDoc: PDDocument, pageCount: Int): List<List<TextWord>> {
-        return try {
-            val extractor = WordExtractor(pageCount)
-            extractor.getText(pdDoc)
-            extractor.wordsByPage.map { it.toList() }
-        } catch (e: Exception) {
-            List(pageCount) { emptyList() }
-        }
-    }
-
-    private fun extractWords(pdDoc: PDDocument, pageIndex: Int): List<TextWord> {
-        return try {
-            val extractor = SinglePageWordExtractor()
-            extractor.startPage = pageIndex + 1
-            extractor.endPage   = pageIndex + 1
-            extractor.getText(pdDoc)
-            extractor.words.toList()
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun extractInkStrokes(pdDoc: PDDocument, pageIndex: Int, pageW: Float, pageH: Float): List<InkStroke> {
-        return try {
-            val pdPage = pdDoc.getPage(pageIndex)
-            val result = mutableListOf<InkStroke>()
-            for (ann in pdPage.annotations) {
-                if (ann.getCOSObject().getNameAsString(COSName.SUBTYPE) != "Ink") continue
-                val name = ann.annotationName ?: continue
-                val id = name.removePrefix("ink-").toIntOrNull() ?: continue
-                val outerArr = ann.getCOSObject().getDictionaryObject(COSName.INKLIST) as? COSArray ?: continue
-                for (i in 0 until outerArr.size()) {
-                    val innerArr = outerArr.getObject(i) as? COSArray ?: continue
-                    val points = mutableListOf<Offset>()
-                    var j = 0
-                    while (j + 1 < innerArr.size()) {
-                        val x = (innerArr.getObject(j) as? COSNumber)?.floatValue() ?: break
-                        val y = (innerArr.getObject(j + 1) as? COSNumber)?.floatValue() ?: break
-                        points.add(Offset(x / pageW, 1f - y / pageH))
-                        j += 2
-                    }
-                    val cosObj = ann.getCOSObject()
-
-                    val cArr = cosObj.getDictionaryObject(COSName.getPDFName("C")) as? COSArray
-                    val strokeColor = if (cArr != null && cArr.size() >= 3) {
-                        val r = (cArr.getObject(0) as? COSNumber)?.floatValue() ?: 0f
-                        val g = (cArr.getObject(1) as? COSNumber)?.floatValue() ?: 0f
-                        val b = (cArr.getObject(2) as? COSNumber)?.floatValue() ?: 0f
-                        StrokeColor.entries.minByOrNull { c ->
-                            val dr = c.pdfRgb[0]-r; val dg = c.pdfRgb[1]-g; val db = c.pdfRgb[2]-b
-                            dr*dr + dg*dg + db*db
-                        } ?: StrokeColor.BLACK
-                    } else StrokeColor.BLACK
-
-                    val bsDict2 = cosObj.getDictionaryObject(COSName.getPDFName("BS")) as? COSDictionary
-                    val w = (bsDict2?.getDictionaryObject(COSName.getPDFName("W")) as? COSNumber)?.floatValue() ?: 1.5f
-                    val strokeThickness = StrokeThickness.entries.minByOrNull { kotlin.math.abs(it.multiplier * 1.5f - w) }
-                        ?: StrokeThickness.MEDIUM
-
-                    val roundCap = cosObj.getDictionaryObject(COSName.AP) != null
-                    if (points.isNotEmpty()) result.add(InkStroke(id, points, strokeColor, strokeThickness, roundCap))
-                }
-            }
-            result
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun extractHighlights(pdDoc: PDDocument, pageIndex: Int, pageHeight: Float): List<PdfHighlight> {
-        return try {
-            val pdPage = pdDoc.getPage(pageIndex)
-            // Keep the real index into pdPage.annotations so deletion removes the right entry
-            pdPage.annotations
-                .mapIndexed { realIdx, ann -> realIdx to ann }
-                .filter { (_, ann) ->
-                    ann is PDAnnotationTextMarkup &&
-                    (ann as PDAnnotationTextMarkup).subtype == PDAnnotationTextMarkup.SUB_TYPE_HIGHLIGHT
-                }
-                .map { (realIdx, ann) ->
-                    ann as PDAnnotationTextMarkup
-                    val quads = ann.quadPoints ?: floatArrayOf()
-                    val rects = quads.toList().chunked(8).mapNotNull { q ->
-                        if (q.size < 8) return@mapNotNull null
-                        val minX  = minOf(q[0], q[2], q[4], q[6])
-                        val maxX  = maxOf(q[0], q[2], q[4], q[6])
-                        val pbTop = maxOf(q[1], q[3], q[5], q[7])
-                        val pbBot = minOf(q[1], q[3], q[5], q[7])
-                        RectF(minX, pageHeight - pbTop, maxX, pageHeight - pbBot)
-                    }
-                    val note = ann.contents?.takeIf { it.isNotBlank() }
-                    PdfHighlight(pageIndex, rects, realIdx, note)
-                }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun extractOutline(pdDoc: PDDocument): List<OutlineItem> {
-        val result = mutableListOf<OutlineItem>()
-        val root = pdDoc.documentCatalog.documentOutline ?: return result
-        fun traverse(item: PDOutlineItem?, level: Int) {
-            var current = item
-            while (current != null) {
-                val title = current.title.orEmpty().trim()
-                val dest = try { current.destination } catch (e: Exception) { null }
-                    ?: try { (current.action as? PDActionGoTo)?.destination } catch (e: Exception) { null }
-                val resolvedDest: PDPageDestination? = when (dest) {
-                    is PDPageDestination -> dest
-                    is PDNamedDestination -> try {
-                        pdDoc.documentCatalog.findNamedDestinationPage(dest)
-                    } catch (e: Exception) { null }
-                    else -> null
-                }
-                val pageIndex = resolvedDest?.retrievePageNumber() ?: -1
-                if (title.isNotEmpty() && pageIndex >= 0) {
-                    result.add(OutlineItem(title, pageIndex, level))
-                }
-                traverse(current.firstChild, level + 1)
-                current = current.nextSibling
-            }
-        }
-        traverse(root.firstChild, 0)
-        return result.mapIndexed { i, item ->
-            item.copy(hasChildren = i + 1 < result.size && result[i + 1].level > result[i].level)
         }
     }
 
@@ -1329,7 +912,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 // Extract outline (fast — just traverses bookmark tree)
-                val outline = extractOutline(pdDoc)
+                val outline = pdfEditor.extractOutline(pdDoc)
                 withContext(Dispatchers.Main) { _outline.value = outline }
 
                 // --- PHASE 1: bitmaps + links only ---
@@ -1362,7 +945,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 // Extract all highlights first — fast, not coupled to word extraction
                 val allHighlights = (0 until pageCount).map { i ->
-                    extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
+                    pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
                 }
                 val pagesWithHighlights = pages.mapIndexed { i, page ->
                     page.copy(highlights = allHighlights[i])
@@ -1373,7 +956,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 // Extract ink strokes from saved annotations and populate overlay
                 val allInkStrokes = (0 until pageCount).associate { i ->
-                    i to extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+                    i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
                 }.filter { it.value.isNotEmpty() }
                 withContext(Dispatchers.Main) {
                     _completedInkStrokes.value = allInkStrokes
@@ -1382,7 +965,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 // Extract words (slow) and emit final state
-                val allWords = extractAllWords(pdDoc, pageCount)
+                val allWords = pdfEditor.extractAllWords(pdDoc, pageCount)
                 pdDoc.close()
 
                 val enrichedPages = pagesWithHighlights.mapIndexed { i, page ->
@@ -1421,14 +1004,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                val info = pdDoc.documentInformation
-                info.title  = newTitle
-                info.author = newAuthors.joinToString("; ").ifBlank { null }
-                pdDoc.documentInformation = info  // re-attach in case no /Info dict existed
-                PdfRepository.writeProjectsToXmp(pdDoc, newProjects)
-                pdfRepository.save(pdDoc, uri)
-                pdDoc.close()
+                pdfEditor.setMetadataInDoc(uri, newTitle, newAuthors, newProjects)
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd
