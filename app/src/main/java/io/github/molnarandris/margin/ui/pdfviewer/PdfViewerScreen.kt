@@ -5,11 +5,9 @@ import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -28,15 +26,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
-import androidx.compose.foundation.layout.WindowInsets
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
-import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.filled.Add
@@ -44,12 +37,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.InputChip
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
@@ -71,8 +61,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -93,7 +81,6 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
@@ -109,7 +96,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -417,126 +403,44 @@ fun PdfViewerScreen(
         containerColor = Color(0xFFE0E0E0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = { if (topBarVisible) {
-            val density = LocalDensity.current
-            val defaultInsets = TopAppBarDefaults.windowInsets
-            val reducedInsets = WindowInsets(
-                top = (defaultInsets.getTop(density) - with(density) { 8.dp.roundToPx() }).coerceAtLeast(0)
-            )
-            TopAppBar(
-                expandedHeight = 56.dp,
-                windowInsets = reducedInsets,
-                title = {
-                    if (isSearchVisible) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            singleLine = true,
-                            placeholder = { Text("Search…") },
-                            modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester)
-                        )
-                    } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(
-                                verticalArrangement = Arrangement.spacedBy(0.dp),
-                                modifier = Modifier.weight(1f, fill = false).pointerInput(Unit) {
-                                    detectTapGestures(onLongPress = {
-                                        titleEditText  = pdfTitle
-                                        authorChips    = pdfAuthors
-                                        newAuthorText  = ""
-                                        projectChips   = pdfProjects
-                                        newProjectText = ""
-                                        isEditDialogVisible = true
-                                    })
-                                }
-                            ) {
-                                Text(
-                                    text = if (pdfTitle.isNotEmpty()) pdfTitle else "No Title",
-                                    fontSize = 16.sp,
-                                    lineHeight = 18.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                val totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0
-                                val pageInfo = if (totalPages > 0) "${currentPage + 1} / $totalPages" else ""
-                                val subtitle = listOfNotNull(
-                                    pdfAuthors.joinToString(", ").ifEmpty { null },
-                                    pageInfo.ifEmpty { null }
-                                ).joinToString("  ·  ")
-                                if (subtitle.isNotEmpty()) {
-                                    Text(
-                                        text = subtitle,
-                                        fontSize = 12.sp,
-                                        lineHeight = 14.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                            val prevDoc = previousDocParams
-                            if (prevDoc != null) {
-                                IconButton(onClick = { onOpenPdf(prevDoc.first, prevDoc.second) }) {
-                                    Icon(Icons.Default.SwapHoriz, contentDescription = "Switch to previous document")
-                                }
-                            }
-                        }
-                    }
+            PdfViewerTopBar(
+                isSearchVisible = isSearchVisible,
+                searchQuery = searchQuery,
+                searchFocusRequester = searchFocusRequester,
+                searchState = searchState,
+                pdfTitle = pdfTitle,
+                pdfAuthors = pdfAuthors,
+                previousDocParams = previousDocParams,
+                totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0,
+                currentPage = currentPage,
+                canUndo = canUndo,
+                canRedo = canRedo,
+                penThickness = penThickness,
+                penColor = penColor,
+                outline = outline,
+                onBack = onBack,
+                onOpenPdf = onOpenPdf,
+                onSearchQueryChange = { searchQuery = it },
+                onPrevMatch = { viewModel.prevMatch() },
+                onNextMatch = { viewModel.nextMatch() },
+                onCloseSearch = {
+                    isSearchVisible = false
+                    searchQuery = ""
+                    viewModel.clearSearch()
                 },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    if (isSearchVisible) {
-                        val matches = searchState.matches
-                        val currentIndex = searchState.currentIndex
-                        if (matches.isNotEmpty()) {
-                            Text("${currentIndex + 1} / ${matches.size}")
-                        }
-                        IconButton(onClick = { viewModel.prevMatch() }) {
-                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous match")
-                        }
-                        IconButton(onClick = { viewModel.nextMatch() }) {
-                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next match")
-                        }
-                        IconButton(onClick = {
-                            isSearchVisible = false
-                            searchQuery = ""
-                            viewModel.clearSearch()
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = "Close search")
-                        }
-                    } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(-8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { viewModel.undo() }, enabled = canUndo) {
-                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
-                            }
-                            IconButton(onClick = { viewModel.redo() }, enabled = canRedo) {
-                                Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
-                            }
-                        }
-                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            StrokeThickness.entries.forEach { t ->
-                                ThicknessButton(t, t == penThickness) { viewModel.setPenThickness(t) }
-                            }
-                        }
-                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                        Row(horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
-                            StrokeColor.entries.forEach { c ->
-                                ColorButton(c, c == penColor) { viewModel.setPenColor(c) }
-                            }
-                        }
-                        Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                        IconButton(onClick = { isSearchVisible = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "Search")
-                        }
-                        if (outline.isNotEmpty()) {
-                            IconButton(onClick = { isOutlineVisible = true }) {
-                                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
-                            }
-                        }
-                    }
+                onOpenSearch = { isSearchVisible = true },
+                onUndo = { viewModel.undo() },
+                onRedo = { viewModel.redo() },
+                onPenThicknessChange = { viewModel.setPenThickness(it) },
+                onPenColorChange = { viewModel.setPenColor(it) },
+                onOpenOutline = { isOutlineVisible = true },
+                onEditMetadata = {
+                    titleEditText  = pdfTitle
+                    authorChips    = pdfAuthors
+                    newAuthorText  = ""
+                    projectChips   = pdfProjects
+                    newProjectText = ""
+                    isEditDialogVisible = true
                 }
             )
         } },
@@ -1644,43 +1548,6 @@ private fun InsertPageIcon(before: Boolean) {
     }
 }
 
-@Composable
-private fun ThicknessButton(thickness: StrokeThickness, isSelected: Boolean, onClick: () -> Unit) {
-    val lineThickness = when (thickness) {
-        StrokeThickness.THIN -> 1.5.dp
-        StrokeThickness.MEDIUM -> 3.dp
-        StrokeThickness.THICK -> 6.dp
-    }
-    val lineWidth = 20.dp
-    val pillShape = RoundedCornerShape(50)
-    val roundedShape = RoundedCornerShape(35)
-    Box(
-        modifier = Modifier.size(32.dp).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        if (isSelected) {
-            Box(Modifier.size(26.dp).border(1.5.dp,  MaterialTheme.colorScheme.outline, roundedShape))
-        }
-        Box(Modifier.width(lineWidth).height(lineThickness).clip(pillShape).background(Color.Black))
-    }
-}
-
-@Composable
-private fun ColorButton(color: StrokeColor, isSelected: Boolean, onClick: () -> Unit) {
-    val ringColor = MaterialTheme.colorScheme.outline
-    val roundedShape = RoundedCornerShape(35)
-    Box(
-        modifier = Modifier.size(32.dp).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        if (isSelected) {
-            Box(Modifier.size(26.dp).border(1.5.dp, ringColor, roundedShape))
-        }
-        Box(
-            Modifier.size(18.dp).clip(roundedShape).background(color.composeColor)
-        )
-    }
-}
 
 private fun isScribble(points: List<Offset>): ScribbleResult {
     val no = ScribbleResult(false, emptyList())
