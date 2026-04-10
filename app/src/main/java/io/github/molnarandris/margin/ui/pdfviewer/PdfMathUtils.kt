@@ -34,6 +34,33 @@ internal fun isScribble(points: List<Offset>): ScribbleResult {
     return if (reversalPts.size >= 4) ScribbleResult(true, reversalPts) else no
 }
 
+internal fun rdpSimplify(points: List<Offset>, epsilon: Float): List<Offset> {
+    if (points.size < 3) return points
+    val first = points.first(); val last = points.last()
+    val dx = last.x - first.x; val dy = last.y - first.y
+    val lenSq = dx * dx + dy * dy
+    var maxDist = 0f; var maxIdx = 0
+    for (i in 1 until points.size - 1) {
+        val dist = if (lenSq == 0f) {
+            val ex = points[i].x - first.x; val ey = points[i].y - first.y
+            sqrt(ex * ex + ey * ey)
+        } else {
+            val t = ((points[i].x - first.x) * dx + (points[i].y - first.y) * dy) / lenSq
+            val cx = first.x + t * dx; val cy = first.y + t * dy
+            val ex = points[i].x - cx; val ey = points[i].y - cy
+            sqrt(ex * ex + ey * ey)
+        }
+        if (dist > maxDist) { maxDist = dist; maxIdx = i }
+    }
+    return if (maxDist > epsilon) {
+        val left = rdpSimplify(points.subList(0, maxIdx + 1), epsilon)
+        val right = rdpSimplify(points.subList(maxIdx, points.size), epsilon)
+        left.dropLast(1) + right
+    } else {
+        listOf(first, last)
+    }
+}
+
 internal fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): Boolean {
     fun cross(o: Offset, a: Offset, b: Offset) =
         (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
