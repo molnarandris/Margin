@@ -487,7 +487,7 @@ class PdfEditor(
             setItem(COSName.getPDFName("W"), COSFloat(strokeWidth))
         }
         val apStream = PDStream(pdDoc)
-        apStream.createOutputStream().use { it.write(apBuilder.toString().toByteArray()) }
+        apStream.createOutputStream(COSName.FLATE_DECODE).use { it.write(apBuilder.toString().toByteArray()) }
         val apCos = apStream.cosObject.apply {
             setName(COSName.TYPE, "XObject")
             setName(COSName.SUBTYPE, "Form")
