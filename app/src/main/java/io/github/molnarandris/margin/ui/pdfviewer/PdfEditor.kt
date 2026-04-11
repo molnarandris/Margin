@@ -381,10 +381,7 @@ class PdfEditor(
             append("1 j ")  // round line join
             append("%.4f w ".format(strokeWidth))
             append("%.4f %.4f %.4f RG ".format(rgb[0], rgb[1], rgb[2]))
-            for (i in coords.indices step 2) {
-                val op = if (i == 0) "m" else "l"
-                append("%.4f %.4f $op ".format(coords[i], coords[i + 1]))
-            }
+            append(buildBezierPath(coords))
             append("S Q")
         }.toByteArray()
         val apStream = PDStream(pdDoc)
@@ -408,6 +405,32 @@ class PdfEditor(
             setString(COSName.NM, "ink-${stroke.id}")
         }
         pdPage.annotations.add(PDAnnotationUnknown(annDict))
+    }
+
+    // Catmull-Rom spline → cubic Bezier path in PDF content-stream syntax.
+    // Returns a string starting with a moveto and followed by curveto operators.
+    private fun buildBezierPath(coords: FloatArray): String {
+        val n = coords.size / 2
+        if (n == 0) return ""
+        return buildString {
+            append("%.4f %.4f m ".format(coords[0], coords[1]))
+            if (n == 1) return@buildString
+            if (n == 2) {
+                append("%.4f %.4f l ".format(coords[2], coords[3]))
+                return@buildString
+            }
+            for (i in 0 until n - 1) {
+                val prev = if (i == 0) i else i - 1
+                val next2 = if (i + 2 >= n) n - 1 else i + 2
+                val px = coords[i * 2];       val py = coords[i * 2 + 1]
+                val qx = coords[(i+1) * 2];   val qy = coords[(i+1) * 2 + 1]
+                val ppx = coords[prev * 2];   val ppy = coords[prev * 2 + 1]
+                val nnx = coords[next2 * 2];  val nny = coords[next2 * 2 + 1]
+                val cp1x = px + (qx - ppx) / 6f; val cp1y = py + (qy - ppy) / 6f
+                val cp2x = qx - (nnx - px) / 6f; val cp2y = qy - (nny - py) / 6f
+                append("%.4f %.4f %.4f %.4f %.4f %.4f c ".format(cp1x, cp1y, cp2x, cp2y, qx, qy))
+            }
+        }
     }
 
     // ---- Private Classes ----

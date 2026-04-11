@@ -2,6 +2,7 @@ package io.github.molnarandris.margin.ui.pdfviewer
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.IntSize
 import kotlin.math.sqrt
 
@@ -59,6 +60,27 @@ internal fun rdpSimplify(points: List<Offset>, epsilon: Float): List<Offset> {
     } else {
         listOf(first, last)
     }
+}
+
+// Build a smooth Catmull-Rom spline as a Compose Path. Points must already be in pixel space.
+internal fun catmullRomPath(pts: List<Offset>): Path {
+    val path = Path()
+    if (pts.isEmpty()) return path
+    path.moveTo(pts[0].x, pts[0].y)
+    if (pts.size < 3) {
+        pts.drop(1).forEach { path.lineTo(it.x, it.y) }
+        return path
+    }
+    for (i in 0 until pts.size - 1) {
+        val prev = if (i == 0) i else i - 1
+        val next2 = if (i + 2 >= pts.size) pts.size - 1 else i + 2
+        val p = pts[i]; val q = pts[i + 1]
+        val pp = pts[prev]; val nn = pts[next2]
+        val cp1x = p.x + (q.x - pp.x) / 6f; val cp1y = p.y + (q.y - pp.y) / 6f
+        val cp2x = q.x - (nn.x - p.x) / 6f; val cp2y = q.y - (nn.y - p.y) / 6f
+        path.cubicTo(cp1x, cp1y, cp2x, cp2y, q.x, q.y)
+    }
+    return path
 }
 
 internal fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): Boolean {

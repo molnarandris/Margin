@@ -407,10 +407,8 @@ internal fun PdfAnnotationLayer(
                     if (pts.first() == pts.last()) {
                         drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
                     } else {
-                        val path = Path().apply {
-                            moveTo(x0, y0)
-                            pts.drop(1).forEach { lineTo((it.x + dxNorm) * size.width, (it.y + dyNorm) * size.height) }
-                        }
+                        val pxPts = pts.map { Offset((it.x + dxNorm) * size.width, (it.y + dyNorm) * size.height) }
+                        val path = catmullRomPath(pxPts)
                         val cap = if (stroke.roundCap) StrokeCap.Round else StrokeCap.Butt
                         val join = if (stroke.roundCap) StrokeJoin.Round else StrokeJoin.Miter
                         drawPath(path, color = c, style = Stroke(width = w, cap = cap, join = join))
@@ -480,10 +478,7 @@ internal fun PdfAnnotationLayer(
                 if (inkStroke.first() == inkStroke.last()) {
                     drawCircle(c, radius = w / 2f, center = inkStroke.first())
                 } else {
-                    val path = Path().apply {
-                        moveTo(inkStroke.first().x, inkStroke.first().y)
-                        inkStroke.drop(1).forEach { lineTo(it.x, it.y) }
-                    }
+                    val path = catmullRomPath(inkStroke)
                     drawPath(path, color = c, style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
             }
