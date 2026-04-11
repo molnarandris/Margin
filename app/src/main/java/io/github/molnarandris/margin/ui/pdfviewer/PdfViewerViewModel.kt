@@ -660,7 +660,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         color: StrokeColor = _penColor.value,
         thickness: StrokeThickness = _penThickness.value
     ): Int {
-        val simplified = rdpSimplify(points, epsilon = 1.0f)
+        val simplified = rdpSimplify(points, epsilon = 0.5f)
         val normalized = simplified.map { Offset(it.x / displayWidth, it.y / displayHeight) }
         val strokeId = nextStrokeId++
         val stroke = InkStroke(strokeId, normalized, color, thickness, roundCap = true)
