@@ -74,7 +74,8 @@ data class InkStroke(
     val points: List<Offset>,
     val color: StrokeColor = StrokeColor.BLACK,
     val thickness: StrokeThickness = StrokeThickness.MEDIUM,
-    val roundCap: Boolean = false
+    val roundCap: Boolean = false,
+    val timestamp: Long = 0L   // ms epoch; 0 = loaded from PDF (already grouped)
 )
 
 data class PdfPage(
@@ -256,7 +257,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     // Pending ink strokes awaiting a batched save (main-thread access only)
     private val pendingInkStrokes = mutableMapOf<Int, MutableList<InkStroke>>() // pageIndex → strokes
     private var strokeSaveJob: Job? = null
-    private val STROKE_SAVE_DEBOUNCE_MS = 500L
+    private val STROKE_SAVE_DEBOUNCE_MS = 1000L
 
     private var pendingDeleteJob: Job? = null
     private var deletedPageSnapshot: Triple<Int, PdfPage, List<InkStroke>>? = null
@@ -643,7 +644,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 pdfEditor.removeInkAnnotationsAndAdd(
                     uri = uri,
                     pageIndex = pageIndex,
-                    namesToRemove = inPdfOriginals.map { "ink-${it.id}" }.toSet(),
+                    strokeIdsToRemove = inPdfOriginals.map { it.id }.toSet(),
                     strokesToAdd = inPdfMoved,
                     alsoWritePending = filteredPending
                 )
@@ -663,7 +664,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val simplified = rdpSimplify(points, epsilon = 0.5f)
         val normalized = simplified.map { Offset(it.x / displayWidth, it.y / displayHeight) }
         val strokeId = nextStrokeId++
-        val stroke = InkStroke(strokeId, normalized, color, thickness, roundCap = true)
+        val stroke = InkStroke(strokeId, normalized, color, thickness, roundCap = true, timestamp = System.currentTimeMillis())
         _completedInkStrokes.update { map ->
             map + (pageIndex to (map[pageIndex].orEmpty() + stroke))
         }
@@ -729,7 +730,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 pdfEditor.removeInkAnnotationsAndAdd(
                     uri = uri,
                     pageIndex = pageIndex,
-                    namesToRemove = idsInPdf.map { "ink-$it" }.toSet(),
+                    strokeIdsToRemove = idsInPdf,
                     strokesToAdd = emptyList(),
                     alsoWritePending = filteredPending
                 )
