@@ -460,8 +460,8 @@ class PdfEditor(
         val apBuilder = StringBuilder()
         apBuilder.append("q ")
         apBuilder.append("1 J 1 j ")
-        apBuilder.append("%.4f w ".format(strokeWidth))
-        apBuilder.append("%.4f %.4f %.4f RG ".format(rgb[0], rgb[1], rgb[2]))
+        apBuilder.append("%.3f w ".format(strokeWidth))
+        apBuilder.append("%.3f %.3f %.3f RG ".format(rgb[0], rgb[1], rgb[2]))
 
         for (stroke in group) {
             val coords = FloatArray(stroke.points.size * 2) { i ->
@@ -515,10 +515,10 @@ class PdfEditor(
         val n = coords.size / 2
         if (n == 0) return ""
         return buildString {
-            append("%.4f %.4f m ".format(coords[0], coords[1]))
+            append("%.3f %.3f m ".format(coords[0], coords[1]))
             if (n == 1) return@buildString
             if (n == 2) {
-                append("%.4f %.4f l ".format(coords[2], coords[3]))
+                append("%.3f %.3f l ".format(coords[2], coords[3]))
                 return@buildString
             }
             for (i in 0 until n - 1) {
@@ -530,7 +530,7 @@ class PdfEditor(
                 val nnx = coords[next2 * 2];  val nny = coords[next2 * 2 + 1]
                 val cp1x = px + (qx - ppx) / 6f; val cp1y = py + (qy - ppy) / 6f
                 val cp2x = qx - (nnx - px) / 6f; val cp2y = qy - (nny - py) / 6f
-                append("%.4f %.4f %.4f %.4f %.4f %.4f c ".format(cp1x, cp1y, cp2x, cp2y, qx, qy))
+                append("%.3f %.3f %.3f %.3f %.3f %.3f c ".format(cp1x, cp1y, cp2x, cp2y, qx, qy))
             }
         }
     }
