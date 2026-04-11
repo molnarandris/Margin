@@ -472,7 +472,7 @@ class PdfEditor(
                 if (i % 2 == 0) { if (coords[i] < minX) minX = coords[i]; if (coords[i] > maxX) maxX = coords[i] }
                 else            { if (coords[i] < minY) minY = coords[i]; if (coords[i] > maxY) maxY = coords[i] }
             }
-            val innerList = COSArray().apply { coords.forEach { add(COSFloat(it)) } }
+            val innerList = COSArray().apply { coords.forEach { add(COSFloat(Math.round(it * 1000) / 1000f)) } }
             outerList.add(innerList)
             apBuilder.append(buildBezierPath(coords))
         }
