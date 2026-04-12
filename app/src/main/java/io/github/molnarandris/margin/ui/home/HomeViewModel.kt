@@ -134,11 +134,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val updated = pdfRepo.updateMetadata(pdf.uri, title, authors, projects)
             if (updated) {
-                val newPdf = pdf.copy(title = title, authors = authors, projects = projects)
+                val newPdf = pdf.copy(title = title, authors = authors, projects = projects, lastOpened = System.currentTimeMillis())
                 val newItem = FileSystemItem.PdfItem(newPdf)
                 val allItems = state.allItems.map {
                     if (it is FileSystemItem.PdfItem && it.pdf.uri == pdf.uri) newItem else it
-                }
+                }.applySortOrder(_sortOrder.value)
                 _uiState.value = state.copy(allItems = allItems, items = allItems)
             }
         }

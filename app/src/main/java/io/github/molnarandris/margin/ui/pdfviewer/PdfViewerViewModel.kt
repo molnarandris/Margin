@@ -1004,6 +1004,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer = null; pfd = null
 
                 pdfEditor.setMetadataInDoc(uri, newTitle, newAuthors, newProjects)
+                pdfRepository.syncMetadataToDb(uri, newTitle, newAuthors, newProjects)
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd

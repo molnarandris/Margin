@@ -342,11 +342,21 @@ class PdfRepository(private val context: Context) {
                 val existingEntity = dao.getByUri(uriStr)
                 val existingName = existingEntity?.name ?: ""
                 val existingType = existingEntity?.type ?: PdfType.DOCUMENT
-                dao.upsert(PdfMetadataEntity(uriStr, existingName, title.ifBlank { "" }, authors.joinToString(";"), lastModified, existingType, projects.joinToString(",")))
+                dao.upsert(PdfMetadataEntity(uriStr, existingName, title.ifBlank { "" }, authors.joinToString(";"), lastModified, existingType, projects.joinToString(","), System.currentTimeMillis()))
                 true
             } catch (e: Exception) {
                 false
             }
+        }
+
+    suspend fun syncMetadataToDb(uri: Uri, title: String, authors: List<String>, projects: List<String>) =
+        withContext(Dispatchers.IO) {
+            val uriStr = uri.toString()
+            val lastModified = DocumentFile.fromSingleUri(context, uri)?.lastModified() ?: 0L
+            val existingEntity = dao.getByUri(uriStr)
+            val existingName = existingEntity?.name ?: ""
+            val existingType = existingEntity?.type ?: PdfType.DOCUMENT
+            dao.upsert(PdfMetadataEntity(uriStr, existingName, title.ifBlank { "" }, authors.joinToString(";"), lastModified, existingType, projects.joinToString(","), System.currentTimeMillis()))
         }
 
     suspend fun createBlankPdf(rootUri: Uri): Uri? = withContext(Dispatchers.IO) {
