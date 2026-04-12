@@ -481,7 +481,9 @@ class PdfEditor(
                 if (i % 2 == 0) { if (coords[i] < minX) minX = coords[i]; if (coords[i] > maxX) maxX = coords[i] }
                 else            { if (coords[i] < minY) minY = coords[i]; if (coords[i] > maxY) maxY = coords[i] }
             }
-            val innerList = COSArray().apply { coords.forEach { add(COSFloat(Math.round(it * 1000) / 1000f)) } }
+            // InkList stores only start+end; the full bezier path lives in the AP stream.
+            val inkCoords = floatArrayOf(coords[0], coords[1], coords[coords.size - 2], coords[coords.size - 1])
+            val innerList = COSArray().apply { inkCoords.forEach { add(COSFloat(Math.round(it * 1000) / 1000f)) } }
             outerList.add(innerList)
             apBuilder.append(buildBezierPath(coords))
         }
