@@ -27,7 +27,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -90,6 +92,7 @@ fun HomeScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val listState = rememberLazyListState()
     var fileNotFoundPdf by remember { mutableStateOf<PdfFile?>(null) }
 
     fileNotFoundPdf?.let { pdf ->
@@ -119,7 +122,13 @@ fun HomeScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refreshContents()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshContents()
+                val s = viewModel.sortOrder.value
+                if (s == SortOrder.BY_LAST_OPENED || s == SortOrder.BY_LAST_MODIFIED) {
+                    scope.launch { listState.scrollToItem(0) }
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -230,6 +239,7 @@ fun HomeScreen(
                         ContentList(
                             items = state.items,
                             rootUri = state.rootUri,
+                            listState = listState,
                             onPdfClick = { pdf ->
                                 scope.launch {
                                     val exists = withContext(Dispatchers.IO) {
@@ -302,6 +312,7 @@ private fun ContentList(
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
     onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>) -> Unit,
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
     var menuTarget by remember { mutableStateOf<FileSystemItem?>(null) }
@@ -424,6 +435,7 @@ private fun ContentList(
     }
 
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
