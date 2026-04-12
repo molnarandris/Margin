@@ -9,6 +9,7 @@ import com.tom_roush.pdfbox.cos.COSDictionary
 import com.tom_roush.pdfbox.cos.COSFloat
 import com.tom_roush.pdfbox.cos.COSName
 import com.tom_roush.pdfbox.cos.COSNumber
+import com.tom_roush.pdfbox.cos.COSStream
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
@@ -349,16 +350,24 @@ class PdfEditor(
                 val strokeColor = parseColor(ann.getCOSObject())
                 val strokeThickness = parseThickness(ann.getCOSObject())
                 val roundCap = ann.getCOSObject().getDictionaryObject(COSName.AP) != null
+                val apPoints = parseApStrokePoints(ann.getCOSObject(), pageW, pageH)
                 for (i in 0 until outerArr.size()) {
                     val innerArr = outerArr.getObject(i) as? COSArray ?: continue
                     val strokeId = ids.getOrNull(i) ?: continue
-                    val points = mutableListOf<Offset>()
-                    var j = 0
-                    while (j + 1 < innerArr.size()) {
-                        val x = (innerArr.getObject(j) as? COSNumber)?.floatValue() ?: break
-                        val y = (innerArr.getObject(j + 1) as? COSNumber)?.floatValue() ?: break
-                        points.add(Offset(x / pageW, 1f - y / pageH))
-                        j += 2
+                    val apStroke = apPoints?.getOrNull(i)
+                    val inkListCount = innerArr.size() / 2
+                    val points: List<Offset> = if (apStroke != null && apStroke.size > inkListCount) {
+                        apStroke
+                    } else {
+                        val pts = mutableListOf<Offset>()
+                        var j = 0
+                        while (j + 1 < innerArr.size()) {
+                            val x = (innerArr.getObject(j) as? COSNumber)?.floatValue() ?: break
+                            val y = (innerArr.getObject(j + 1) as? COSNumber)?.floatValue() ?: break
+                            pts.add(Offset(x / pageW, 1f - y / pageH))
+                            j += 2
+                        }
+                        pts
                     }
                     if (points.isNotEmpty()) result.add(InkStroke(strokeId, points, strokeColor, strokeThickness, roundCap))
                 }
@@ -561,6 +570,51 @@ class PdfEditor(
         val w = (bsDict?.getDictionaryObject(COSName.getPDFName("W")) as? COSNumber)?.floatValue() ?: 1.5f
         return StrokeThickness.entries.minByOrNull { kotlin.math.abs(it.multiplier * 1.5f - w) }
             ?: StrokeThickness.MEDIUM
+    }
+
+    /**
+     * Parses the /AP /N content stream of an Ink annotation and returns the anchor points
+     * of each sub-path (one list per InkList inner array). Returns null if the stream is
+     * absent or unreadable. For cubic bezier segments only the endpoint is retained —
+     * control points are discarded because the renderer re-derives them via Catmull-Rom.
+     */
+    private fun parseApStrokePoints(annDict: COSDictionary, pageW: Float, pageH: Float): List<List<Offset>>? {
+        val apDict = annDict.getDictionaryObject(COSName.AP) as? COSDictionary ?: return null
+        val nStream = apDict.getDictionaryObject(COSName.N) as? COSStream ?: return null
+        val content = try { nStream.createInputStream().use { String(it.readBytes()) } }
+                      catch (e: Exception) { return null }
+
+        val result = mutableListOf<MutableList<Offset>>()
+        var current: MutableList<Offset>? = null
+        val ops = mutableListOf<Float>()
+
+        for (token in content.trim().split(Regex("\\s+"))) {
+            val num = token.toFloatOrNull()
+            if (num != null) { ops.add(num); continue }
+            when (token) {
+                "m" -> if (ops.size >= 2) {
+                    current?.let { if (it.isNotEmpty()) result.add(it) }
+                    current = mutableListOf(Offset(ops[ops.size - 2] / pageW, 1f - ops[ops.size - 1] / pageH))
+                    ops.clear()
+                }
+                "l" -> if (ops.size >= 2) {
+                    current?.add(Offset(ops[ops.size - 2] / pageW, 1f - ops[ops.size - 1] / pageH))
+                    ops.clear()
+                }
+                "c" -> if (ops.size >= 6) {
+                    // cubic bezier: cp1x cp1y cp2x cp2y endx endy — keep only endpoint
+                    current?.add(Offset(ops[ops.size - 2] / pageW, 1f - ops[ops.size - 1] / pageH))
+                    ops.clear()
+                }
+                "S", "s", "f", "F", "B", "b", "n" -> {
+                    current?.let { if (it.isNotEmpty()) result.add(it) }
+                    current = null; ops.clear()
+                }
+                else -> ops.clear() // graphics-state ops (J, j, w, RG, q, Q, …) consume their own operands
+            }
+        }
+        current?.let { if (it.isNotEmpty()) result.add(it) }
+        return result.ifEmpty { null }
     }
 
     // ---- Private Classes ----
