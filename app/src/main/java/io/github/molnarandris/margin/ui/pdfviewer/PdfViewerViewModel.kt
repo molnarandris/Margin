@@ -914,9 +914,74 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val outline = pdfEditor.extractOutline(pdDoc)
                 withContext(Dispatchers.Main) { _outline.value = outline }
 
-                // --- PHASE 1: bitmaps + links only ---
-                val pages = renderMutex.withLock {
+                // --- PHASE 1: render initial page immediately, placeholders for the rest ---
+                fun extractLinks(page: PdfRenderer.Page): List<PdfLink> {
+                    val links = mutableListOf<PdfLink>()
+                    page.getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
+                    page.getGotoLinks().forEach { dest ->
+                        links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
+                            dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
+                    }
+                    return links
+                }
+
+                val firstIndex = initialPage.coerceIn(0, newRenderer.pageCount - 1)
+
+                val pages: MutableList<PdfPage> = renderMutex.withLock {
                     (0 until newRenderer.pageCount).map { index ->
+                        newRenderer.openPage(index).use { page ->
+                            if (index == firstIndex) {
+                                val bitmap = Bitmap.createBitmap(
+                                    (page.width * 2f).toInt(),
+                                    (page.height * 2f).toInt(),
+                                    Bitmap.Config.ARGB_8888
+                                )
+                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList())
+                            } else {
+                                // Placeholder: real dimensions, small bitmap — replaced in background below
+                                PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
+                                    page.width, page.height, emptyList(), emptyList(), emptyList())
+                            }
+                        }
+                    }.toMutableList()
+                }
+
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects)
+                    if (initialPage > 0) _pendingScrollToPage.value = initialPage
+                }
+
+                // Show highlights and ink strokes on the initial page before rendering the rest
+                val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
+                val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
+                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty()) {
+                    if (firstHighlights.isNotEmpty())
+                        pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
+                    val state = _uiState.value as? PdfViewerUiState.Ready
+                    if (state != null) {
+                        withContext(Dispatchers.Main) {
+                            _uiState.value = state.copy(pages = pages.toList())
+                            if (firstInkStrokes.isNotEmpty()) {
+                                _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
+                                val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
+                                if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                            }
+                        }
+                    }
+                }
+
+                // Render remaining pages in background, outward from firstIndex so nearby pages load first
+                val remainingIndices = buildList {
+                    var lo = firstIndex - 1
+                    var hi = firstIndex + 1
+                    while (lo >= 0 || hi < pages.size) {
+                        if (hi < pages.size) add(hi++)
+                        if (lo >= 0) add(lo--)
+                    }
+                }
+                for (index in remainingIndices) {
+                    renderMutex.withLock {
                         newRenderer.openPage(index).use { page ->
                             val bitmap = Bitmap.createBitmap(
                                 (page.width * 2f).toInt(),
@@ -924,20 +989,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 Bitmap.Config.ARGB_8888
                             )
                             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            val links = mutableListOf<PdfLink>()
-                            page.getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
-                            page.getGotoLinks().forEach { dest ->
-                                links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
-                                    dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
-                            }
-                            PdfPage(bitmap, page.width, page.height, links, emptyList(), emptyList())
+                            pages[index] = pages[index].copy(bitmap = bitmap, links = extractLinks(page))
                         }
                     }
-                }
-
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects)
-                    if (initialPage > 0) _pendingScrollToPage.value = initialPage
+                    val state = _uiState.value as? PdfViewerUiState.Ready ?: continue
+                    withContext(Dispatchers.Main) {
+                        _uiState.value = state.copy(pages = pages.toList())
+                    }
                 }
 
                 val pageCount = pages.size
