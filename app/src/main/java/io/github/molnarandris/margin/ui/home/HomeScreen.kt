@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -90,9 +91,11 @@ fun HomeScreen(
     val uiState by viewModel.uiState.collectAsState()
     val sortOrder by viewModel.sortOrder.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    var isSearchActive by remember { mutableStateOf(searchQuery.isNotBlank()) }
     var fileNotFoundPdf by remember { mutableStateOf<PdfFile?>(null) }
 
     fileNotFoundPdf?.let { pdf ->
@@ -142,59 +145,84 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Margin") },
-                navigationIcon = {},
-                actions = {
-                    if (uiState is HomeUiState.Ready) {
-                        var showSortMenu by remember { mutableStateOf(false) }
-                        Box {
-                            IconButton(onClick = { showSortMenu = true }) {
-                                Icon(Icons.Default.SwapVert, contentDescription = "Sort")
-                            }
-                            DropdownMenu(
-                                expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Name") },
-                                    onClick = { viewModel.setSortOrder(SortOrder.BY_NAME); showSortMenu = false },
-                                    trailingIcon = if (sortOrder == SortOrder.BY_NAME) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Last modified") },
-                                    onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_MODIFIED); showSortMenu = false },
-                                    trailingIcon = if (sortOrder == SortOrder.BY_LAST_MODIFIED) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Last opened") },
-                                    onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_OPENED); showSortMenu = false },
-                                    trailingIcon = if (sortOrder == SortOrder.BY_LAST_OPENED) {
-                                        { Icon(Icons.Default.Check, contentDescription = null) }
-                                    } else null
-                                )
-                            }
+            if (isSearchActive) {
+                TopAppBar(
+                    title = {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { viewModel.setSearchQuery(it) },
+                            placeholder = { Text("Search title, author, filename…") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    actions = {
+                        IconButton(onClick = {
+                            isSearchActive = false
+                            viewModel.setSearchQuery("")
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close search")
                         }
                     }
-                    IconButton(
-                        onClick = { viewModel.syncFilesystem() },
-                        enabled = !isRefreshing
-                    ) {
-                        if (isRefreshing) {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Sync with filesystem")
+                )
+            } else {
+                TopAppBar(
+                    title = { Text("Margin") },
+                    navigationIcon = {},
+                    actions = {
+                        if (uiState is HomeUiState.Ready) {
+                            IconButton(onClick = { isSearchActive = true }) {
+                                Icon(Icons.Default.Search, contentDescription = "Search")
+                            }
+                            var showSortMenu by remember { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { showSortMenu = true }) {
+                                    Icon(Icons.Default.SwapVert, contentDescription = "Sort")
+                                }
+                                DropdownMenu(
+                                    expanded = showSortMenu,
+                                    onDismissRequest = { showSortMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Name") },
+                                        onClick = { viewModel.setSortOrder(SortOrder.BY_NAME); showSortMenu = false },
+                                        trailingIcon = if (sortOrder == SortOrder.BY_NAME) {
+                                            { Icon(Icons.Default.Check, contentDescription = null) }
+                                        } else null
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Last modified") },
+                                        onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_MODIFIED); showSortMenu = false },
+                                        trailingIcon = if (sortOrder == SortOrder.BY_LAST_MODIFIED) {
+                                            { Icon(Icons.Default.Check, contentDescription = null) }
+                                        } else null
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Last opened") },
+                                        onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_OPENED); showSortMenu = false },
+                                        trailingIcon = if (sortOrder == SortOrder.BY_LAST_OPENED) {
+                                            { Icon(Icons.Default.Check, contentDescription = null) }
+                                        } else null
+                                    )
+                                }
+                            }
+                        }
+                        IconButton(
+                            onClick = { viewModel.syncFilesystem() },
+                            enabled = !isRefreshing
+                        ) {
+                            if (isRefreshing) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Refresh, contentDescription = "Sync with filesystem")
+                            }
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
                         }
                     }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                }
-            )
+                )
+            }
         },
         floatingActionButton = {
             if (uiState is HomeUiState.Ready) {

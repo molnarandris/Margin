@@ -28,6 +28,16 @@ private fun List<FileSystemItem>.applySortOrder(order: SortOrder): List<FileSyst
     }
 }
 
+private fun List<FileSystemItem>.applySearch(query: String): List<FileSystemItem> {
+    if (query.isBlank()) return this
+    val q = query.trim().lowercase()
+    return filterIsInstance<FileSystemItem.PdfItem>().filter { item ->
+        item.pdf.name.lowercase().contains(q) ||
+        item.pdf.title.lowercase().contains(q) ||
+        item.pdf.authors.any { it.lowercase().contains(q) }
+    }
+}
+
 sealed class HomeUiState {
     object Loading : HomeUiState()
     object NoDirectory : HomeUiState()
@@ -55,6 +65,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
     init {
         viewModelScope.launch {
             PdfRepository.pdfOpenedFlow.collect { (uri, timestamp) ->
@@ -64,7 +77,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         FileSystemItem.PdfItem(item.pdf.copy(lastOpened = timestamp))
                     else item
                 }.applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems)
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
             }
         }
         viewModelScope.launch {
@@ -78,7 +91,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     val allItems = pdfRepo.getAllPdfs()
                         .map { FileSystemItem.PdfItem(it) }
                         .applySortOrder(_sortOrder.value)
-                    _uiState.value = HomeUiState.Ready(uri, allItems, allItems)
+                    _uiState.value = HomeUiState.Ready(uri, allItems, allItems.applySearch(_searchQuery.value))
                 }
             }
         }
@@ -94,11 +107,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        _uiState.value = state.copy(items = state.allItems.applySearch(query))
+    }
+
     fun setSortOrder(order: SortOrder) {
         _sortOrder.value = order
         val state = _uiState.value as? HomeUiState.Ready ?: return
         val allItems = state.allItems.applySortOrder(order)
-        _uiState.value = state.copy(allItems = allItems, items = allItems)
+        _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
         viewModelScope.launch { prefsRepo.saveSortOrder(order.name) }
     }
 
@@ -110,7 +129,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val allItems = pdfRepo.getAllPdfs()
                     .map { FileSystemItem.PdfItem(it) }
                     .applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems)
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
             }
         }
     }
@@ -124,7 +143,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val allItems = pdfRepo.getAllPdfs()
                     .map { FileSystemItem.PdfItem(it) }
                     .applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems)
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
             }
         }
     }
@@ -139,7 +158,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val allItems = state.allItems.map {
                     if (it is FileSystemItem.PdfItem && it.pdf.uri == pdf.uri) newItem else it
                 }.applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems)
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
             }
         }
     }
@@ -152,7 +171,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems)
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
         }
     }
 
@@ -163,7 +182,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems)
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
         }
     }
 
@@ -176,7 +195,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems)
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
             _isRefreshing.value = false
         }
     }
@@ -187,7 +206,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems)
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
         }
     }
 }
