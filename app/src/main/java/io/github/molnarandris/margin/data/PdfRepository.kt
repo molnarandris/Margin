@@ -11,6 +11,7 @@ import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDMetadata
 import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -38,6 +39,8 @@ sealed class FileSystemItem {
 }
 
 class PdfRepository(private val context: Context) {
+
+    private val prefsRepo = PreferencesRepository(context)
 
     fun backupFileFor(uri: Uri): File =
         File(context.filesDir, "backup_${uri.toString().hashCode()}.pdf")
@@ -372,10 +375,12 @@ class PdfRepository(private val context: Context) {
             val dir = navigateToDirOrCreate(rootUri, listOf("Notes", yyyy, mm)) ?: return@withContext null
             val destFile = dir.createFile("application/pdf", name) ?: return@withContext null
             val title = "Note on $yyyy.$mm.$dd at $hh:$roundedMin"
+            val authorString = prefsRepo.userName.first().trim()
             val doc = PDDocument()
             val info = doc.documentInformation
             info.creator = "Margin"
             info.title = title
+            if (authorString.isNotEmpty()) info.author = authorString
             info.setCreationDate(Calendar.getInstance())
             doc.documentInformation = info
             val page = PDPage(PDRectangle.A4)
@@ -384,7 +389,7 @@ class PdfRepository(private val context: Context) {
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
             doc.close()
             val lastModified = destFile.lastModified()
-            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, title, "", lastModified, PdfType.NOTE))
+            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, title, authorString, lastModified, PdfType.NOTE))
             destFile.uri
         } catch (e: Exception) {
             null

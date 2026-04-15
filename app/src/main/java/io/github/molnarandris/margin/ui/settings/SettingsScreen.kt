@@ -16,6 +16,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -23,6 +24,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.documentfile.provider.DocumentFile
@@ -47,6 +51,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val keepScreenOn: StateFlow<Boolean> = prefsRepo.keepScreenOn
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val userName: StateFlow<String> = prefsRepo.userName
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
     fun onDirectorySelected(uri: Uri) {
         getApplication<Application>().contentResolver.takePersistableUriPermission(
             uri,
@@ -60,6 +67,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setKeepScreenOn(value: Boolean) {
         viewModelScope.launch { prefsRepo.saveKeepScreenOn(value) }
     }
+
+    fun setUserName(value: String) {
+        viewModelScope.launch { prefsRepo.saveUserName(value) }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,6 +82,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val directoryUri by viewModel.directoryUri.collectAsState()
     val keepScreenOn by viewModel.keepScreenOn.collectAsState()
+    val userName by viewModel.userName.collectAsState()
 
     val directoryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -115,6 +127,22 @@ fun SettingsScreen(
                     )
                 },
                 modifier = Modifier.clickable { viewModel.setKeepScreenOn(!keepScreenOn) }
+            )
+            HorizontalDivider()
+            var userNameDraft by remember(userName) { mutableStateOf(userName) }
+            ListItem(
+                headlineContent = { Text("Your name") },
+                supportingContent = {
+                    OutlinedTextField(
+                        value = userNameDraft,
+                        onValueChange = { draft ->
+                            userNameDraft = draft
+                            viewModel.setUserName(draft)
+                        },
+                        singleLine = true,
+                        placeholder = { Text("Used as author on new notes") }
+                    )
+                }
             )
             HorizontalDivider()
         }
