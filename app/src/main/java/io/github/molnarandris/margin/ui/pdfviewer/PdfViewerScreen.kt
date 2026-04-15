@@ -30,7 +30,9 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
@@ -110,14 +112,16 @@ private data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val hig
 @OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalLayoutApi::class)
 @Composable
 fun PdfViewerScreen(
-    dirUri: Uri,
-    docId: String,
+    dirUri: Uri? = null,
+    docId: String? = null,
+    externalUri: Uri? = null,
     onBack: () -> Unit,
     onOpenPdf: (dirUri: Uri, docId: String) -> Unit = { _, _ -> },
     viewModel: PdfViewerViewModel = viewModel()
 ) {
-    LaunchedEffect(dirUri, docId) {
-        viewModel.loadPdf(dirUri, docId)
+    LaunchedEffect(dirUri, docId, externalUri) {
+        if (externalUri != null) viewModel.loadPdfFromUri(externalUri)
+        else if (dirUri != null && docId != null) viewModel.loadPdf(dirUri, docId)
     }
 
     val uiState by viewModel.uiState.collectAsState()
@@ -159,6 +163,15 @@ fun PdfViewerScreen(
 
     val context = LocalContext.current
     val keepScreenOn by PreferencesRepository(context).keepScreenOn.collectAsState(initial = false)
+    val isExternalPdf by viewModel.isExternalPdf.collectAsState()
+    val isImported by viewModel.isImported.collectAsState()
+    val importMessage by viewModel.importMessage.collectAsState()
+
+    LaunchedEffect(importMessage) {
+        val msg = importMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(msg)
+        viewModel.clearImportMessage()
+    }
     DisposableEffect(keepScreenOn) {
         view.keepScreenOn = keepScreenOn
         onDispose { view.keepScreenOn = false }
@@ -367,6 +380,13 @@ fun PdfViewerScreen(
     Scaffold(
         containerColor = Color(0xFFE0E0E0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (isExternalPdf && !isImported) {
+                FloatingActionButton(onClick = { viewModel.importCurrentPdf() }) {
+                    Icon(Icons.Default.Download, contentDescription = "Import to library")
+                }
+            }
+        },
         topBar = { if (topBarVisible) {
             PdfViewerTopBar(
                 isSearchVisible = isSearchVisible,

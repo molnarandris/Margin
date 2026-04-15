@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -262,6 +263,17 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var pendingDeleteJob: Job? = null
     private var deletedPageSnapshot: Triple<Int, PdfPage, List<InkStroke>>? = null
 
+    private val _isExternalPdf = MutableStateFlow(false)
+    val isExternalPdf: StateFlow<Boolean> = _isExternalPdf.asStateFlow()
+
+    private val _isImported = MutableStateFlow(false)
+    val isImported: StateFlow<Boolean> = _isImported.asStateFlow()
+
+    private val _importMessage = MutableStateFlow<String?>(null)
+    val importMessage: StateFlow<String?> = _importMessage.asStateFlow()
+
+    private var loadedExternalUri: Uri? = null
+
     private var rerenderJob: Job? = null
     private var currentRenderScale = 2f
     private var docUri: Uri? = null
@@ -299,6 +311,48 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             pdfRepository.recordOpen(dirUri, uri)
             renderPages(dirUri, docId, fileName, lastPage)
         }
+    }
+
+    fun loadPdfFromUri(uri: Uri) {
+        loadedExternalUri = uri
+        _isExternalPdf.value = true
+        _isImported.value = false
+        rerenderJob?.cancel()
+        viewModelScope.launch {
+            _uiState.value = PdfViewerUiState.Loading
+            val app = getApplication<Application>()
+            val fileName = withContext(Dispatchers.IO) {
+                app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0).removeSuffix(".pdf") else ""
+                    } ?: ""
+            }
+            loadedFileName = fileName
+            val lastPage = prefsRepo.getLastPage(uri) ?: 0
+            renderPagesFromUri(uri, fileName, lastPage)
+        }
+    }
+
+    fun importCurrentPdf() {
+        val externalUri = loadedExternalUri ?: return
+        viewModelScope.launch {
+            val rootUriString = prefsRepo.directoryUriString.first()
+            if (rootUriString == null) {
+                _importMessage.value = "No library configured. Set a library folder in Settings."
+                return@launch
+            }
+            val success = pdfRepository.importPdf(externalUri, Uri.parse(rootUriString), emptyList())
+            if (success) {
+                _isImported.value = true
+                _importMessage.value = "Imported to library"
+            } else {
+                _importMessage.value = "Import failed"
+            }
+        }
+    }
+
+    fun clearImportMessage() {
+        _importMessage.value = null
     }
 
     fun insertPage(insertBeforeIndex: Int) {
@@ -1040,6 +1094,160 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     } else {
                         PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
                     }
+                }
+            }
+        }
+
+    private suspend fun renderPagesFromUri(uri: Uri, fileName: String, initialPage: Int = 0): Unit =
+        withContext(Dispatchers.IO) {
+            try {
+                val app = getApplication<Application>()
+                PDFBoxResourceLoader.init(app)
+
+                this@PdfViewerViewModel.docUri = uri
+
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r")
+                    ?: run {
+                        withContext(Dispatchers.Main) {
+                            _uiState.value = PdfViewerUiState.Error("Could not open file")
+                        }
+                        return@withContext
+                    }
+                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
+
+                pfd?.close()
+                renderer?.close()
+                pfd = newPfd
+                val newRenderer = PdfRenderer(newPfd)
+                renderer = newRenderer
+                currentRenderScale = 2f
+                val title    = pdDoc.documentInformation?.title?.takeIf { it.isNotBlank() } ?: ""
+                val authors  = pdDoc.documentInformation?.author
+                    ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
+                    ?: emptyList()
+                val projects = PdfRepository.readProjectsFromXmp(pdDoc)
+                withContext(Dispatchers.Main) {
+                    _displayTitle.value = title.ifBlank { fileName }
+                    _displayAuthors.value = authors
+                    _displayProjects.value = projects
+                }
+
+                val outline = pdfEditor.extractOutline(pdDoc)
+                withContext(Dispatchers.Main) { _outline.value = outline }
+
+                fun extractLinks(page: PdfRenderer.Page): List<PdfLink> {
+                    val links = mutableListOf<PdfLink>()
+                    page.getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
+                    page.getGotoLinks().forEach { dest ->
+                        links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
+                            dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
+                    }
+                    return links
+                }
+
+                val firstIndex = initialPage.coerceIn(0, newRenderer.pageCount - 1)
+
+                val pages: MutableList<PdfPage> = renderMutex.withLock {
+                    (0 until newRenderer.pageCount).map { index ->
+                        newRenderer.openPage(index).use { page ->
+                            if (index == firstIndex) {
+                                val bitmap = Bitmap.createBitmap(
+                                    (page.width * 2f).toInt(),
+                                    (page.height * 2f).toInt(),
+                                    Bitmap.Config.ARGB_8888
+                                )
+                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList())
+                            } else {
+                                PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
+                                    page.width, page.height, emptyList(), emptyList(), emptyList())
+                            }
+                        }
+                    }.toMutableList()
+                }
+
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects)
+                    if (initialPage > 0) _pendingScrollToPage.value = initialPage
+                }
+
+                val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
+                val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
+                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty()) {
+                    if (firstHighlights.isNotEmpty())
+                        pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
+                    val state = _uiState.value as? PdfViewerUiState.Ready
+                    if (state != null) {
+                        withContext(Dispatchers.Main) {
+                            _uiState.value = state.copy(pages = pages.toList())
+                            if (firstInkStrokes.isNotEmpty()) {
+                                _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
+                                val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
+                                if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                            }
+                        }
+                    }
+                }
+
+                val remainingIndices = buildList {
+                    var lo = firstIndex - 1
+                    var hi = firstIndex + 1
+                    while (lo >= 0 || hi < pages.size) {
+                        if (hi < pages.size) add(hi++)
+                        if (lo >= 0) add(lo--)
+                    }
+                }
+                for (index in remainingIndices) {
+                    renderMutex.withLock {
+                        newRenderer.openPage(index).use { page ->
+                            val bitmap = Bitmap.createBitmap(
+                                (page.width * 2f).toInt(),
+                                (page.height * 2f).toInt(),
+                                Bitmap.Config.ARGB_8888
+                            )
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            pages[index] = pages[index].copy(bitmap = bitmap, links = extractLinks(page))
+                        }
+                    }
+                    val state = _uiState.value as? PdfViewerUiState.Ready ?: continue
+                    withContext(Dispatchers.Main) {
+                        _uiState.value = state.copy(pages = pages.toList())
+                    }
+                }
+
+                val pageCount = pages.size
+
+                val allHighlights = (0 until pageCount).map { i ->
+                    pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
+                }
+                val pagesWithHighlights = pages.mapIndexed { i, page ->
+                    page.copy(highlights = allHighlights[i])
+                }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects)
+                }
+
+                val allInkStrokes = (0 until pageCount).associate { i ->
+                    i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+                }.filter { it.value.isNotEmpty() }
+                withContext(Dispatchers.Main) {
+                    _completedInkStrokes.value = allInkStrokes
+                    val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
+                    if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                }
+
+                val allWords = pdfEditor.extractAllWords(pdDoc, pageCount)
+                pdDoc.close()
+
+                val enrichedPages = pagesWithHighlights.mapIndexed { i, page ->
+                    page.copy(words = allWords[i])
+                }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Ready(enrichedPages, title, authors)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
                 }
             }
         }

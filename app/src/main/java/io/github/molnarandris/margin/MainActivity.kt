@@ -1,10 +1,14 @@
 package io.github.molnarandris.margin
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.runtime.Composable
@@ -18,9 +22,12 @@ import io.github.molnarandris.margin.ui.pdfviewer.PdfViewerScreen
 import io.github.molnarandris.margin.ui.settings.SettingsScreen
 import android.net.Uri
 import android.provider.DocumentsContract
+import androidx.compose.runtime.LaunchedEffect
 import io.github.molnarandris.margin.ui.theme.MarginTheme
 
 class MainActivity : ComponentActivity() {
+    var pendingIntent by mutableStateOf<Intent?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
@@ -31,9 +38,18 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             MarginTheme {
-                MarginApp()
+                MarginApp(
+                    initialIntent = intent,
+                    pendingIntent = pendingIntent,
+                    onPendingIntentConsumed = { pendingIntent = null }
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        pendingIntent = intent
     }
 
     override fun onResume() {
@@ -55,8 +71,36 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MarginApp() {
+fun MarginApp(
+    initialIntent: Intent? = null,
+    pendingIntent: Intent? = null,
+    onPendingIntentConsumed: () -> Unit = {}
+) {
     val navController = rememberNavController()
+
+    fun navigateToExternalPdf(uri: Uri) {
+        val encodedUri = Uri.encode(uri.toString())
+        navController.navigate("external_pdf?uri=$encodedUri") {
+            popUpTo("home") { inclusive = false }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val uri = initialIntent
+            ?.takeIf { it.action == Intent.ACTION_VIEW }
+            ?.data
+        if (uri != null) navigateToExternalPdf(uri)
+    }
+
+    LaunchedEffect(pendingIntent) {
+        val uri = pendingIntent
+            ?.takeIf { it.action == Intent.ACTION_VIEW }
+            ?.data
+        if (uri != null) {
+            navigateToExternalPdf(uri)
+            onPendingIntentConsumed()
+        }
+    }
 
     NavHost(navController = navController, startDestination = "home") {
         composable("home") {
@@ -92,6 +136,16 @@ fun MarginApp() {
                         popUpTo("home") { inclusive = false }
                     }
                 }
+            )
+        }
+        composable(
+            route = "external_pdf?uri={uri}",
+            arguments = listOf(navArgument("uri") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val uri = Uri.parse(backStackEntry.arguments?.getString("uri") ?: return@composable)
+            PdfViewerScreen(
+                externalUri = uri,
+                onBack = { navController.popBackStack() }
             )
         }
     }
