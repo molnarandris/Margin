@@ -469,14 +469,29 @@ private fun ContentList(
     ) {
         items(items, key = { item -> "pdf:${(item as FileSystemItem.PdfItem).pdf.uri}" }) { item ->
             val pdf = (item as FileSystemItem.PdfItem).pdf
-            val meta = listOfNotNull(
-                pdf.title.takeIf { it.isNotBlank() },
-                pdf.authors.joinToString(", ").takeIf { it.isNotBlank() }
-            ).joinToString(" — ")
+            val title = pdf.title.takeIf { it.isNotBlank() } ?: relativePath(pdf.uri, rootUri)
+            val authorsText = pdf.authors.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
+            val filename = relativePath(pdf.uri, rootUri)
             Box {
                 ListItem(
-                    headlineContent = { Text(relativePath(pdf.uri, rootUri)) },
-                    supportingContent = if (meta.isNotBlank()) ({ Text(meta) }) else null,
+                    headlineContent = { Text(title) },
+                    supportingContent = {
+                        Column {
+                            if (authorsText != null) {
+                                Text(
+                                    text = authorsText,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            Text(
+                                text = filename,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Light
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .combinedClickable(
