@@ -371,9 +371,11 @@ class PdfRepository(private val context: Context) {
             val yyyy = "%04d".format(now.year)
             val dir = navigateToDirOrCreate(rootUri, listOf("Notes", yyyy, mm)) ?: return@withContext null
             val destFile = dir.createFile("application/pdf", name) ?: return@withContext null
+            val title = "Note on $yyyy.$mm.$dd at $hh:$roundedMin"
             val doc = PDDocument()
             val info = doc.documentInformation
             info.creator = "Margin"
+            info.title = title
             info.setCreationDate(Calendar.getInstance())
             doc.documentInformation = info
             val page = PDPage(PDRectangle.A4)
@@ -382,7 +384,7 @@ class PdfRepository(private val context: Context) {
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
             doc.close()
             val lastModified = destFile.lastModified()
-            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, "", "", lastModified, PdfType.NOTE))
+            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, title, "", lastModified, PdfType.NOTE))
             destFile.uri
         } catch (e: Exception) {
             null
