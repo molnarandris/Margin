@@ -1,6 +1,8 @@
 package io.github.molnarandris.margin.ui.pdfviewer
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.RectF
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
@@ -16,6 +18,7 @@ import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
+import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
@@ -617,6 +620,118 @@ class PdfEditor(
         }
         current?.let { if (it.isNotEmpty()) result.add(it) }
         return result.ifEmpty { null }
+    }
+
+    // ---- Image Annotation Persistence ----
+
+    /**
+     * Replaces all existing image annotations on [pageIndex] with [annotations].
+     * Must be called within renderMutex.withLock, with renderer/pfd already closed.
+     */
+    suspend fun writeImageAnnotationsToPage(uri: Uri, pageIndex: Int, annotations: List<PdfImageAnnotation>) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        val pdPage = pdDoc.getPage(pageIndex)
+        // Remove old image annotations on this page (collect first, then remove as a batch
+        // so the COSArrayList propagates the deletion to the underlying COSArray correctly)
+        val pageAnnotations = pdPage.annotations
+        val toRemove = pageAnnotations.filter { ann ->
+            ann.getCOSObject().getNameAsString(COSName.SUBTYPE) == "Stamp" &&
+            (ann.annotationName ?: "").startsWith("img-")
+        }
+        pageAnnotations.removeAll(toRemove)
+        // Add current set
+        annotations.forEach { addImageAnnotationToPage(pdDoc, pdPage, it) }
+        pdfRepository.save(pdDoc, uri)
+        pdDoc.close()
+    }
+
+    private fun addImageAnnotationToPage(pdDoc: PDDocument, pdPage: PDPage, annot: PdfImageAnnotation) {
+        val mbox = pdPage.mediaBox
+        val r = annot.rectNorm
+        val pdfX = r.left  * mbox.width
+        val pdfY = (1f - r.bottom) * mbox.height   // PDF y=0 at bottom
+        val pdfW = (r.right  - r.left)   * mbox.width
+        val pdfH = (r.bottom - r.top)    * mbox.height
+
+        // Create Image XObject via JPEGFactory (handles DCT encoding internally)
+        val pdImage = JPEGFactory.createFromImage(pdDoc, annot.bitmap)
+        val imgCos = pdImage.cosObject
+
+        // Build Form XObject AP stream: q <w> 0 0 <h> 0 0 cm /Img Do Q
+        val apContent = "q %.3f 0 0 %.3f 0 0 cm /Img Do Q".format(pdfW, pdfH)
+        val xobjDict = COSDictionary().apply { setItem(COSName.getPDFName("Img"), imgCos) }
+        val resourcesDict = COSDictionary().apply { setItem(COSName.XOBJECT, xobjDict) }
+        val bboxArr = COSArray().apply {
+            add(COSFloat(0f)); add(COSFloat(0f)); add(COSFloat(pdfW)); add(COSFloat(pdfH))
+        }
+        val apFormDict = COSDictionary().apply {
+            setName(COSName.TYPE, "XObject"); setName(COSName.SUBTYPE, "Form")
+            setItem(COSName.BBOX, bboxArr); setItem(COSName.RESOURCES, resourcesDict)
+        }
+        val apStream = PDStream(pdDoc)
+        apStream.createOutputStream(COSName.FLATE_DECODE).use { it.write(apContent.toByteArray()) }
+        apStream.cosObject.addAll(apFormDict)
+
+        // Build annotation dictionary
+        val rectArr = COSArray().apply {
+            add(COSFloat(pdfX)); add(COSFloat(pdfY))
+            add(COSFloat(pdfX + pdfW)); add(COSFloat(pdfY + pdfH))
+        }
+        val apDict = COSDictionary().apply {
+            setItem(COSName.getPDFName("N"), apStream.cosObject)
+        }
+        val annotDict = COSDictionary().apply {
+            setName(COSName.TYPE, "Annot"); setName(COSName.SUBTYPE, "Stamp")
+            setString(COSName.NM, "img-${annot.id}")
+            setItem(COSName.RECT, rectArr)
+            setItem(COSName.AP, apDict)
+        }
+        pdPage.annotations.add(PDAnnotationUnknown(annotDict))
+    }
+
+    /**
+     * Extracts image annotations from [pageIndex] in [pdDoc].
+     * Returns normalized rects (y=0 at top, 0-1 coords).
+     */
+    fun extractImageAnnotations(pdDoc: PDDocument, pageIndex: Int, pageW: Float, pageH: Float): List<PdfImageAnnotation> {
+        return try {
+            val pdPage = pdDoc.getPage(pageIndex)
+            val mbox = pdPage.mediaBox
+            val result = mutableListOf<PdfImageAnnotation>()
+            for (ann in pdPage.annotations) {
+                if (ann.getCOSObject().getNameAsString(COSName.SUBTYPE) != "Stamp") continue
+                val nm = ann.annotationName ?: continue
+                if (!nm.startsWith("img-")) continue
+                val id = nm.removePrefix("img-").toIntOrNull() ?: continue
+
+                // Get rect
+                val rectCos = ann.getCOSObject().getDictionaryObject(COSName.RECT) as? COSArray ?: continue
+                val pdfX1 = (rectCos.getObject(0) as? COSNumber)?.floatValue() ?: continue
+                val pdfY1 = (rectCos.getObject(1) as? COSNumber)?.floatValue() ?: continue
+                val pdfX2 = (rectCos.getObject(2) as? COSNumber)?.floatValue() ?: continue
+                val pdfY2 = (rectCos.getObject(3) as? COSNumber)?.floatValue() ?: continue
+
+                // Extract JPEG bytes from AP stream → Image XObject
+                val apDict = ann.getCOSObject().getDictionaryObject(COSName.AP) as? COSDictionary ?: continue
+                val apForm = apDict.getDictionaryObject(COSName.getPDFName("N")) as? COSStream ?: continue
+                val resDict = apForm.getDictionaryObject(COSName.RESOURCES) as? COSDictionary ?: continue
+                val xobjDict = resDict.getDictionaryObject(COSName.XOBJECT) as? COSDictionary ?: continue
+                val imgStream = xobjDict.getDictionaryObject(COSName.getPDFName("Img")) as? COSStream ?: continue
+                val jpegBytes = imgStream.createRawInputStream().use { it.readBytes() }
+                val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: continue
+
+                // Convert PDF coords (y=0 at bottom) to normalized (y=0 at top)
+                val normLeft   = pdfX1 / mbox.width
+                val normBottom = pdfY1 / mbox.height
+                val normRight  = pdfX2 / mbox.width
+                val normTop    = pdfY2 / mbox.height
+                val rectNorm = RectF(normLeft, 1f - normTop, normRight, 1f - normBottom)
+                result.add(PdfImageAnnotation(id = id, bitmap = bitmap, rectNorm = rectNorm))
+            }
+            result
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     // ---- Private Classes ----

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -76,6 +77,7 @@ fun PdfViewerTopBar(
     onPenColorChange: (StrokeColor) -> Unit,
     onOpenOutline: () -> Unit,
     onEditMetadata: () -> Unit,
+    onInsertPhoto: () -> Unit,
 ) {
     val density = LocalDensity.current
     val defaultInsets = TopAppBarDefaults.windowInsets
@@ -161,6 +163,10 @@ fun PdfViewerTopBar(
                     IconButton(onClick = onRedo, enabled = canRedo) {
                         Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
                     }
+                }
+                Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                IconButton(onClick = onInsertPhoto) {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = "Insert photo")
                 }
                 Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {

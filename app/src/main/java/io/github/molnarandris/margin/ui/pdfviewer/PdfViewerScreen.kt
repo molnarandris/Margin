@@ -1,7 +1,12 @@
 package io.github.molnarandris.margin.ui.pdfviewer
 
 import android.content.Intent
+import android.graphics.RectF
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -101,11 +106,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.material3.Surface
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
 
@@ -162,6 +169,42 @@ fun PdfViewerScreen(
     val gestureZonePx = remember { 32 * view.resources.displayMetrics.density }
 
     val context = LocalContext.current
+
+    // Image annotation state
+    var imageAnnotationSelection by remember { mutableStateOf<ImageAnnotationSelection?>(null) }
+    val imageAnnotationsByPage by viewModel.imageAnnotations.collectAsState()
+    var cameraImageUri by remember { mutableStateOf<Uri?>(null) }
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) {
+            val uri = cameraImageUri ?: return@rememberLauncherForActivityResult
+            outerScope.launch {
+                val bitmap = withContext(Dispatchers.IO) {
+                    try {
+                        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        context.contentResolver.openInputStream(uri)?.use {
+                            android.graphics.BitmapFactory.decodeStream(it, null, opts)
+                        }
+                        val maxDim = 2048
+                        var sample = 1
+                        while (maxOf(opts.outWidth, opts.outHeight) / sample > maxDim) sample *= 2
+                        val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                        context.contentResolver.openInputStream(uri)?.use {
+                            android.graphics.BitmapFactory.decodeStream(it, null, decodeOpts)
+                        }
+                    } catch (e: Exception) {
+                        null
+                    }
+                } ?: return@launch
+                val annot = viewModel.insertImageAnnotation(bitmap, currentPage)
+                imageAnnotationSelection = ImageAnnotationSelection(
+                    pageIndex = currentPage,
+                    originalAnnotation = annot,
+                    annotation = annot,
+                )
+            }
+        }
+    }
+
     val keepScreenOn by PreferencesRepository(context).keepScreenOn.collectAsState(initial = false)
     val isExternalPdf by viewModel.isExternalPdf.collectAsState()
     val isImported by viewModel.isImported.collectAsState()
@@ -419,6 +462,13 @@ fun PdfViewerScreen(
                 onPenThicknessChange = { viewModel.setPenThickness(it) },
                 onPenColorChange = { viewModel.setPenColor(it) },
                 onOpenOutline = { isOutlineVisible = true },
+                onInsertPhoto = {
+                    val photoFile = File(context.cacheDir, "photos/camera_${System.currentTimeMillis()}.jpg")
+                        .also { it.parentFile?.mkdirs() }
+                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+                    cameraImageUri = uri
+                    takePicture.launch(uri)
+                },
                 onEditMetadata = {
                     titleEditText  = pdfTitle
                     authorChips    = pdfAuthors
@@ -788,6 +838,48 @@ fun PdfViewerScreen(
                                 inkClipboard = inkClipboard,
                                 onCopyInkStrokes = { viewModel.copyInkStrokes(it) },
                                 onPasteInkStrokes = { pageIdx, centerNorm -> viewModel.pasteInkStrokes(pageIdx, centerNorm) },
+                                imageAnnotations = imageAnnotationsByPage[currentPage].orEmpty(),
+                                imageAnnotationSelection = imageAnnotationSelection?.takeIf { it.pageIndex == currentPage },
+                                onImageAnnotationSelectionChanged = { imageAnnotationSelection = it },
+                                onImageDragDelta = { d ->
+                                    imageAnnotationSelection = imageAnnotationSelection?.let { s ->
+                                        s.copy(dragOffsetPx = s.dragOffsetPx + d)
+                                    }
+                                },
+                                onCommitImageMove = { pageIdx, orig, totalDeltaPx, pgSize ->
+                                    val imgW = orig.rectNorm.right - orig.rectNorm.left
+                                    val imgH = orig.rectNorm.bottom - orig.rectNorm.top
+                                    val dx = totalDeltaPx.x / pgSize.width
+                                    val dy = totalDeltaPx.y / pgSize.height
+                                    val newLeft = (orig.rectNorm.left + dx).coerceIn(0f, 1f - imgW)
+                                    val newTop  = (orig.rectNorm.top  + dy).coerceIn(0f, 1f - imgH)
+                                    val moved = orig.copy(rectNorm = RectF(newLeft, newTop, newLeft + imgW, newTop + imgH))
+                                    viewModel.moveImageAnnotation(pageIdx, orig, moved)
+                                    imageAnnotationSelection = imageAnnotationSelection?.copy(
+                                        annotation = moved, dragOffsetPx = Offset.Zero, activeHandle = null
+                                    )
+                                },
+                                onCommitImageResize = { pageIdx, orig, handle, totalDeltaPx, pgSize ->
+                                    val dx = totalDeltaPx.x / pgSize.width
+                                    val dy = totalDeltaPx.y / pgSize.height
+                                    val minSize = 0.05f
+                                    val r = orig.rectNorm
+                                    val newRect = when (handle) {
+                                        ResizeHandle.TOP_LEFT     -> RectF((r.left+dx).coerceAtMost(r.right-minSize), (r.top+dy).coerceAtMost(r.bottom-minSize), r.right, r.bottom)
+                                        ResizeHandle.TOP_RIGHT    -> RectF(r.left, (r.top+dy).coerceAtMost(r.bottom-minSize), (r.right+dx).coerceAtLeast(r.left+minSize), r.bottom)
+                                        ResizeHandle.BOTTOM_LEFT  -> RectF((r.left+dx).coerceAtMost(r.right-minSize), r.top, r.right, (r.bottom+dy).coerceAtLeast(r.top+minSize))
+                                        ResizeHandle.BOTTOM_RIGHT -> RectF(r.left, r.top, (r.right+dx).coerceAtLeast(r.left+minSize), (r.bottom+dy).coerceAtLeast(r.top+minSize))
+                                    }
+                                    val moved = orig.copy(rectNorm = newRect)
+                                    viewModel.moveImageAnnotation(pageIdx, orig, moved)
+                                    imageAnnotationSelection = imageAnnotationSelection?.copy(
+                                        annotation = moved, dragOffsetPx = Offset.Zero, activeHandle = null
+                                    )
+                                },
+                                onDeleteImageAnnotation = { pageIdx, annot ->
+                                    viewModel.deleteImageAnnotation(pageIdx, annot)
+                                    imageAnnotationSelection = null
+                                },
                             )
                         }
                         AnimatedVisibility(
@@ -853,6 +945,13 @@ private fun PageContent(
     inkClipboard: List<InkStroke>?,
     onCopyInkStrokes: (List<InkStroke>) -> Unit,
     onPasteInkStrokes: (Int, Offset) -> Unit,
+    imageAnnotations: List<PdfImageAnnotation>,
+    imageAnnotationSelection: ImageAnnotationSelection?,
+    onImageAnnotationSelectionChanged: (ImageAnnotationSelection?) -> Unit,
+    onImageDragDelta: (Offset) -> Unit,
+    onCommitImageMove: (Int, PdfImageAnnotation, Offset, IntSize) -> Unit,
+    onCommitImageResize: (Int, PdfImageAnnotation, ResizeHandle, Offset, IntSize) -> Unit,
+    onDeleteImageAnnotation: (Int, PdfImageAnnotation) -> Unit,
 ) {
     PdfPageBase(page = page, modifier = Modifier.fillMaxSize()) {
         PdfAnnotationLayer(
@@ -869,6 +968,8 @@ private fun PageContent(
                 dragChars = dragChars,
                 destinationHighlight = destinationHighlight,
                 popupHeightPx = popupHeightPx,
+                imageAnnotations = imageAnnotations,
+                imageAnnotationSelection = imageAnnotationSelection,
             ),
             actions = PdfPageActions(
                 onBarsVisibleToggle = onBarsVisibleToggle,
@@ -892,6 +993,11 @@ private fun PageContent(
                 onDeletePage = onDeletePage,
                 onInsertPageBefore = onInsertPageBefore,
                 onInsertPageAfter = onInsertPageAfter,
+                onImageAnnotationSelectionChanged = onImageAnnotationSelectionChanged,
+                onImageDragDelta = onImageDragDelta,
+                onCommitImageMove = { annot, delta, sz -> onCommitImageMove(index, annot, delta, sz) },
+                onCommitImageResize = { annot, handle, delta, sz -> onCommitImageResize(index, annot, handle, delta, sz) },
+                onDeleteImageAnnotation = { annot -> onDeleteImageAnnotation(index, annot) },
             ),
             modifier = Modifier.matchParentSize(),
         )

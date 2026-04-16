@@ -79,6 +79,13 @@ data class InkStroke(
     val timestamp: Long = 0L   // ms epoch; 0 = loaded from PDF (already grouped)
 )
 
+data class PdfImageAnnotation(
+    val id: Int,
+    val bitmap: Bitmap,
+    val rectNorm: android.graphics.RectF, // left, top, right, bottom in 0–1 page coords (y=0 at top)
+    val annotationIndex: Int = -1,        // -1 = not yet persisted to PDF
+)
+
 data class PdfPage(
     val bitmap: Bitmap,
     val nativeWidth: Int,
@@ -118,6 +125,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var nextStrokeId = 0
     private val _completedInkStrokes = MutableStateFlow<Map<Int, List<InkStroke>>>(emptyMap())
     val completedInkStrokes: StateFlow<Map<Int, List<InkStroke>>> = _completedInkStrokes.asStateFlow()
+
+    private var nextImageAnnotationId = 0
+    private val _imageAnnotations = MutableStateFlow<Map<Int, List<PdfImageAnnotation>>>(emptyMap())
+    val imageAnnotations: StateFlow<Map<Int, List<PdfImageAnnotation>>> = _imageAnnotations.asStateFlow()
 
     private val _inkClipboard = MutableStateFlow<List<InkStroke>?>(null)
     val inkClipboard: StateFlow<List<InkStroke>?> = _inkClipboard.asStateFlow()
@@ -209,6 +220,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     setMetadata(action.oldTitle, action.oldAuthors, action.oldProjects)
                 is UndoableAction.StrokesMoved ->
                     moveInkStrokes(action.pageIndex, action.movedStrokes, action.originalStrokes)
+                is UndoableAction.ImageAnnotationAdded ->
+                    removeImageAnnotationDirectly(action.pageIndex, action.annotation.id)
+                is UndoableAction.ImageAnnotationDeleted ->
+                    addImageAnnotationDirectly(action.pageIndex, action.annotation)
+                is UndoableAction.ImageAnnotationTransformed ->
+                    replaceImageAnnotationDirectly(action.pageIndex, action.new, action.old)
             }
         } finally {
             isUndoRedoInProgress = false
@@ -240,6 +257,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     setMetadata(action.newTitle, action.newAuthors, action.newProjects)
                 is UndoableAction.StrokesMoved ->
                     moveInkStrokes(action.pageIndex, action.originalStrokes, action.movedStrokes)
+                is UndoableAction.ImageAnnotationAdded ->
+                    addImageAnnotationDirectly(action.pageIndex, action.annotation)
+                is UndoableAction.ImageAnnotationDeleted ->
+                    removeImageAnnotationDirectly(action.pageIndex, action.annotation.id)
+                is UndoableAction.ImageAnnotationTransformed ->
+                    replaceImageAnnotationDirectly(action.pageIndex, action.old, action.new)
             }
         } finally {
             isUndoRedoInProgress = false
@@ -818,6 +841,86 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // ── Image Annotations ────────────────────────────────────────────────────
+
+    /** Insert a new image annotation on the given page, save to PDF, and return it. */
+    fun insertImageAnnotation(bitmap: android.graphics.Bitmap, pageIndex: Int): PdfImageAnnotation {
+        val state = _uiState.value as? PdfViewerUiState.Ready
+        val page = state?.pages?.getOrNull(pageIndex)
+        val aspectRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+        val normWidth = 0.4f
+        val normHeight = if (page != null)
+            normWidth / aspectRatio * (page.nativeWidth.toFloat() / page.nativeHeight.toFloat())
+        else
+            normWidth / aspectRatio
+        val normLeft = (1f - normWidth)  / 2f
+        val normTop  = (1f - normHeight) / 2f
+        val rectNorm = android.graphics.RectF(normLeft, normTop, normLeft + normWidth, normTop + normHeight)
+        val id = nextImageAnnotationId++
+        val annotation = PdfImageAnnotation(id = id, bitmap = bitmap, rectNorm = rectNorm)
+        addImageAnnotationDirectly(pageIndex, annotation)
+        pushUndo(UndoableAction.ImageAnnotationAdded(pageIndex, annotation))
+        saveImageAnnotations(pageIndex)
+        return annotation
+    }
+
+    /** Move/resize an image annotation: replaces old with new in the overlay and queues a PDF save. */
+    fun moveImageAnnotation(pageIndex: Int, original: PdfImageAnnotation, moved: PdfImageAnnotation) {
+        replaceImageAnnotationDirectly(pageIndex, original, moved)
+        pushUndo(UndoableAction.ImageAnnotationTransformed(pageIndex, original, moved))
+        saveImageAnnotations(pageIndex)
+    }
+
+    /** Delete an image annotation from the overlay and PDF. */
+    fun deleteImageAnnotation(pageIndex: Int, annotation: PdfImageAnnotation) {
+        removeImageAnnotationDirectly(pageIndex, annotation.id)
+        pushUndo(UndoableAction.ImageAnnotationDeleted(pageIndex, annotation))
+        saveImageAnnotations(pageIndex)
+    }
+
+    private fun addImageAnnotationDirectly(pageIndex: Int, annotation: PdfImageAnnotation) {
+        _imageAnnotations.update { map ->
+            map + (pageIndex to (map[pageIndex].orEmpty() + annotation))
+        }
+        if (annotation.id >= nextImageAnnotationId) nextImageAnnotationId = annotation.id + 1
+    }
+
+    private fun removeImageAnnotationDirectly(pageIndex: Int, id: Int) {
+        _imageAnnotations.update { map ->
+            val remaining = map[pageIndex].orEmpty().filter { it.id != id }
+            if (remaining.isEmpty()) map - pageIndex else map + (pageIndex to remaining)
+        }
+    }
+
+    private fun replaceImageAnnotationDirectly(pageIndex: Int, old: PdfImageAnnotation, new: PdfImageAnnotation) {
+        _imageAnnotations.update { map ->
+            val updated = map[pageIndex].orEmpty().map { if (it.id == old.id) new else it }
+            map + (pageIndex to updated)
+        }
+    }
+
+    private fun saveImageAnnotations(pageIndex: Int) {
+        launchSave {
+            val uri = docUri ?: return@launchSave
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+                try {
+                    val annotations = _imageAnnotations.value[pageIndex].orEmpty()
+                    pdfEditor.writeImageAnnotationsToPage(uri, pageIndex, annotations)
+                } catch (e: Exception) {
+                    android.util.Log.e("PdfViewer", "Failed to save image annotations", e)
+                }
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     fun deleteHighlight(highlight: PdfHighlight) {
         pushUndo(UndoableAction.HighlightDeleted(highlight.pageIndex, highlight.bounds, highlight.note))
         flushPendingInkStrokes()
@@ -1006,10 +1109,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     if (initialPage > 0) _pendingScrollToPage.value = initialPage
                 }
 
-                // Show highlights and ink strokes on the initial page before rendering the rest
+                // Show highlights, ink strokes, and image annotations on the initial page before rendering the rest
                 val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
                 val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
-                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty()) {
+                val firstImageAnnotations = pdfEditor.extractImageAnnotations(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
+                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty() || firstImageAnnotations.isNotEmpty()) {
                     if (firstHighlights.isNotEmpty())
                         pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
                     val state = _uiState.value as? PdfViewerUiState.Ready
@@ -1020,6 +1124,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
                                 val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
                                 if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                            }
+                            if (firstImageAnnotations.isNotEmpty()) {
+                                _imageAnnotations.value = mapOf(firstIndex to firstImageAnnotations)
+                                val maxId = firstImageAnnotations.maxOfOrNull { it.id } ?: -1
+                                if (maxId >= nextImageAnnotationId) nextImageAnnotationId = maxId + 1
                             }
                         }
                     }
@@ -1069,10 +1178,17 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val allInkStrokes = (0 until pageCount).associate { i ->
                     i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
                 }.filter { it.value.isNotEmpty() }
+                // Extract image annotations
+                val allImageAnnotations = (0 until pageCount).associate { i ->
+                    i to pdfEditor.extractImageAnnotations(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+                }.filter { it.value.isNotEmpty() }
                 withContext(Dispatchers.Main) {
                     _completedInkStrokes.value = allInkStrokes
                     val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
                     if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                    _imageAnnotations.value = allImageAnnotations
+                    val maxImgId = allImageAnnotations.values.flatten().maxOfOrNull { it.id } ?: -1
+                    if (maxImgId >= nextImageAnnotationId) nextImageAnnotationId = maxImgId + 1
                 }
 
                 // Extract words (slow) and emit final state
@@ -1173,7 +1289,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
                 val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
-                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty()) {
+                val firstImageAnnotations2 = pdfEditor.extractImageAnnotations(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
+                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty() || firstImageAnnotations2.isNotEmpty()) {
                     if (firstHighlights.isNotEmpty())
                         pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
                     val state = _uiState.value as? PdfViewerUiState.Ready
@@ -1184,6 +1301,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
                                 val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
                                 if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                            }
+                            if (firstImageAnnotations2.isNotEmpty()) {
+                                _imageAnnotations.value = mapOf(firstIndex to firstImageAnnotations2)
+                                val maxId = firstImageAnnotations2.maxOfOrNull { it.id } ?: -1
+                                if (maxId >= nextImageAnnotationId) nextImageAnnotationId = maxId + 1
                             }
                         }
                     }
@@ -1230,10 +1352,16 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val allInkStrokes = (0 until pageCount).associate { i ->
                     i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
                 }.filter { it.value.isNotEmpty() }
+                val allImageAnnotations = (0 until pageCount).associate { i ->
+                    i to pdfEditor.extractImageAnnotations(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+                }.filter { it.value.isNotEmpty() }
                 withContext(Dispatchers.Main) {
                     _completedInkStrokes.value = allInkStrokes
                     val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
                     if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                    _imageAnnotations.value = allImageAnnotations
+                    val maxImgId = allImageAnnotations.values.flatten().maxOfOrNull { it.id } ?: -1
+                    if (maxImgId >= nextImageAnnotationId) nextImageAnnotationId = maxImgId + 1
                 }
 
                 val allWords = pdfEditor.extractAllWords(pdDoc, pageCount)

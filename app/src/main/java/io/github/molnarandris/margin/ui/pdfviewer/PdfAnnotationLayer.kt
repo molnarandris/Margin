@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerType
@@ -69,6 +70,16 @@ internal data class InkStrokeSelection(
     val dragOffsetPx: Offset = Offset.Zero
 )
 
+internal enum class ResizeHandle { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
+
+internal data class ImageAnnotationSelection(
+    val pageIndex: Int,
+    val originalAnnotation: PdfImageAnnotation, // snapshot at selection start (for undo)
+    val annotation: PdfImageAnnotation,          // current (live) state
+    val dragOffsetPx: Offset = Offset.Zero,
+    val activeHandle: ResizeHandle? = null,
+)
+
 internal data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
 
 internal data class PdfPageState(
@@ -84,6 +95,8 @@ internal data class PdfPageState(
     val dragChars: List<TextChar>?,
     val destinationHighlight: DestinationHighlight?,
     val popupHeightPx: Int,
+    val imageAnnotations: List<PdfImageAnnotation> = emptyList(),
+    val imageAnnotationSelection: ImageAnnotationSelection? = null,
 )
 
 internal class PdfPageActions(
@@ -108,6 +121,11 @@ internal class PdfPageActions(
     val onDeletePage: () -> Unit,
     val onInsertPageBefore: () -> Unit,
     val onInsertPageAfter: () -> Unit,
+    val onImageAnnotationSelectionChanged: (ImageAnnotationSelection?) -> Unit,
+    val onImageDragDelta: (Offset) -> Unit,
+    val onCommitImageMove: (PdfImageAnnotation, Offset, IntSize) -> Unit,
+    val onCommitImageResize: (PdfImageAnnotation, ResizeHandle, Offset, IntSize) -> Unit,
+    val onDeleteImageAnnotation: (PdfImageAnnotation) -> Unit,
 )
 
 @Composable
@@ -125,8 +143,12 @@ internal fun PdfAnnotationLayer(
     var contextMenuSize by remember { mutableStateOf(IntSize.Zero) }
     var selectionMenuSize by remember { mutableStateOf(IntSize.Zero) }
     val selectionMenuSizeRef = rememberUpdatedState(selectionMenuSize)
+    var imageMenuSize by remember { mutableStateOf(IntSize.Zero) }
+    val imageMenuSizeRef = rememberUpdatedState(imageMenuSize)
     val inkStrokesRef = rememberUpdatedState(state.inkStrokes)
     val inkStrokeSelectionRef = rememberUpdatedState(state.inkStrokeSelection)
+    val imageAnnotationsRef = rememberUpdatedState(state.imageAnnotations)
+    val imageAnnotationSelectionRef = rememberUpdatedState(state.imageAnnotationSelection)
     val currentSelectionRef = rememberUpdatedState(state.textSelection)
     val actionsRef = rememberUpdatedState(actions)
     val indexRef = rememberUpdatedState(state.index)
@@ -179,6 +201,86 @@ internal fun PdfAnnotationLayer(
                         } else false
                         if (!tappedMenu) {
                             currentActions.onStrokeSelectionChanged(null)
+                        }
+                        return@awaitEachGesture
+                    }
+                }
+
+                // ── Handle active image selection (finger only; stylus falls through to ink) ──
+                val imgSel = imageAnnotationSelectionRef.value
+                if (imgSel != null && imgSel.pageIndex == currentIndex &&
+                    down.type != PointerType.Stylus && down.type != PointerType.Eraser) {
+                    val r = imgSel.annotation.rectNorm
+                    val left = r.left * pageSize.width  + imgSel.dragOffsetPx.x
+                    val top  = r.top  * pageSize.height + imgSel.dragOffsetPx.y
+                    val w    = (r.right - r.left) * pageSize.width
+                    val h    = (r.bottom - r.top) * pageSize.height
+                    val imgBounds = Rect(left, top, left + w, top + h)
+                    val handleRadiusPx = with(density) { 24.dp.toPx() }
+                    val corners = listOf(
+                        ResizeHandle.TOP_LEFT     to Offset(left,     top),
+                        ResizeHandle.TOP_RIGHT    to Offset(left + w, top),
+                        ResizeHandle.BOTTOM_LEFT  to Offset(left,     top + h),
+                        ResizeHandle.BOTTOM_RIGHT to Offset(left + w, top + h),
+                    )
+                    val hitHandle = corners.firstOrNull { (_, pt) ->
+                        (down.position - pt).getDistance() <= handleRadiusPx
+                    }?.first
+
+                    if (hitHandle != null) {
+                        // ── Resize gesture ────────────────────────────────────────
+                        down.consume()
+                        currentActions.onImageAnnotationSelectionChanged(imgSel.copy(activeHandle = hitHandle, dragOffsetPx = Offset.Zero))
+                        var prevPos = down.position
+                        var totalDelta = Offset.Zero
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.find { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                if (totalDelta != Offset.Zero)
+                                    currentActions.onCommitImageResize(imgSel.annotation, hitHandle, totalDelta, pageSize)
+                                break
+                            }
+                            change.consume()
+                            val delta = change.position - prevPos
+                            prevPos = change.position
+                            totalDelta += delta
+                            currentActions.onImageDragDelta(delta)
+                        }
+                        return@awaitEachGesture
+                    } else if (imgBounds.contains(down.position)) {
+                        // ── Move gesture ──────────────────────────────────────────
+                        down.consume()
+                        var prevPos = down.position
+                        var totalDelta = Offset.Zero
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.find { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                if (totalDelta != Offset.Zero)
+                                    currentActions.onCommitImageMove(imgSel.annotation, totalDelta, pageSize)
+                                break
+                            }
+                            change.consume()
+                            val delta = change.position - prevPos
+                            prevPos = change.position
+                            totalDelta += delta
+                            currentActions.onImageDragDelta(delta)
+                        }
+                        return@awaitEachGesture
+                    } else {
+                        // Tap outside → check if it landed on the image menu
+                        val menuSz = imageMenuSizeRef.value
+                        val tappedMenu = if (menuSz != IntSize.Zero) {
+                            val gapPx = with(density) { 8.dp.roundToPx() }
+                            val mX = (imgBounds.center.x - menuSz.width / 2f).roundToInt()
+                                .coerceIn(0, (pageSize.width - menuSz.width).coerceAtLeast(0)).toFloat()
+                            val mY = (imgBounds.top - gapPx - menuSz.height).roundToInt()
+                                .coerceAtLeast(0).toFloat()
+                            Rect(mX, mY, mX + menuSz.width, mY + menuSz.height).contains(down.position)
+                        } else false
+                        if (!tappedMenu) {
+                            currentActions.onImageAnnotationSelectionChanged(null)
                         }
                         return@awaitEachGesture
                     }
@@ -303,6 +405,26 @@ internal fun PdfAnnotationLayer(
                         },
                         onLongPress = { longPressOffset ->
                             if (pageSize == IntSize.Zero) return@detectTapGestures
+                            // Long press on an unselected image → select it
+                            if (imageAnnotationSelectionRef.value == null) {
+                                val imgHit = imageAnnotationsRef.value.firstOrNull { img ->
+                                    val r = img.rectNorm
+                                    Rect(
+                                        r.left   * pageSize.width,  r.top    * pageSize.height,
+                                        r.right  * pageSize.width,  r.bottom * pageSize.height,
+                                    ).contains(longPressOffset)
+                                }
+                                if (imgHit != null) {
+                                    actionsRef.value.onImageAnnotationSelectionChanged(
+                                        ImageAnnotationSelection(
+                                            pageIndex = state.index,
+                                            originalAnnotation = imgHit,
+                                            annotation = imgHit,
+                                        )
+                                    )
+                                    return@detectTapGestures
+                                }
+                            }
                             val prX = longPressOffset.x / pageSize.width * page.nativeWidth
                             val prY = longPressOffset.y / pageSize.height * page.nativeHeight
                             val hitHighlight = page.highlights.firstOrNull { h ->
@@ -385,6 +507,71 @@ internal fun PdfAnnotationLayer(
                         val rr = r.right               / page.nativeWidth  * size.width
                         val b  = r.top                 / page.nativeHeight * size.height
                         drawRect(color, Offset(l, t), Size(rr - l, b - t), blendMode = BlendMode.Multiply)
+                    }
+                }
+            }
+        }
+        // ── Image annotations (rendered below ink so you can write on top) ──────
+        val activeImgSel = state.imageAnnotationSelection?.takeIf { it.pageIndex == state.index }
+        if (state.imageAnnotations.isNotEmpty() || activeImgSel != null) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val handleR = 10.dp.toPx()
+                state.imageAnnotations.forEach { img ->
+                    val rect = imageDisplayRect(img, activeImgSel, size.width, size.height)
+                    drawImage(
+                        image = img.bitmap.asImageBitmap(),
+                        dstOffset = IntOffset(rect[0].toInt(), rect[1].toInt()),
+                        dstSize   = IntSize(rect[2].toInt().coerceAtLeast(1), rect[3].toInt().coerceAtLeast(1)),
+                    )
+                    if (activeImgSel?.annotation?.id == img.id) {
+                        drawRect(
+                            color = Color(0xFF00BCD4.toInt()),
+                            topLeft = Offset(rect[0], rect[1]),
+                            size = Size(rect[2], rect[3]),
+                            style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f))
+                        )
+                        listOf(
+                            Offset(rect[0],           rect[1]),
+                            Offset(rect[0] + rect[2], rect[1]),
+                            Offset(rect[0],           rect[1] + rect[3]),
+                            Offset(rect[0] + rect[2], rect[1] + rect[3]),
+                        ).forEach { corner ->
+                            drawCircle(Color.White, handleR, corner)
+                            drawCircle(Color(0xFF00BCD4.toInt()), handleR, corner, style = Stroke(2.dp.toPx()))
+                        }
+                    }
+                }
+            }
+            // Image selection action menu (Delete button above the image)
+            if (activeImgSel != null) {
+                val img = activeImgSel.annotation
+                val rect = imageDisplayRect(img, activeImgSel, pageSize.width.toFloat(), pageSize.height.toFloat())
+                val dispLeft = rect[0]; val dispTop = rect[1]; val dispW = rect[2]
+                with(density) {
+                    val gapPx = 8.dp.roundToPx()
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                val menuX = (dispLeft + dispW / 2 - imageMenuSize.width / 2f).roundToInt()
+                                    .coerceIn(0, (pageSize.width - imageMenuSize.width).coerceAtLeast(0))
+                                val menuY = (dispTop - gapPx - imageMenuSize.height).roundToInt().coerceAtLeast(0)
+                                IntOffset(menuX, menuY)
+                            }
+                            .onSizeChanged { imageMenuSize = it }
+                    ) {
+                        Card(
+                            elevation = CardDefaults.cardElevation(4.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color.White)
+                        ) {
+                            Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
+                                IconButton(onClick = {
+                                    actions.onDeleteImageAnnotation(activeImgSel.originalAnnotation)
+                                    actions.onImageAnnotationSelectionChanged(null)
+                                }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete image")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -732,6 +919,46 @@ internal fun PdfAnnotationLayer(
                 }
             }
         }
+    }
+}
+
+/**
+ * Compute the display rect [left, top, width, height] in pixels for an image annotation,
+ * taking into account any active selection drag/resize offset.
+ */
+private fun imageDisplayRect(
+    img: PdfImageAnnotation,
+    sel: ImageAnnotationSelection?,
+    pageW: Float,
+    pageH: Float,
+): FloatArray {
+    val r = img.rectNorm
+    val baseLeft = r.left  * pageW
+    val baseTop  = r.top   * pageH
+    val baseW    = (r.right  - r.left) * pageW
+    val baseH    = (r.bottom - r.top)  * pageH
+    if (sel == null || sel.annotation.id != img.id) return floatArrayOf(baseLeft, baseTop, baseW, baseH)
+    val dx = sel.dragOffsetPx.x
+    val dy = sel.dragOffsetPx.y
+    val minPx = 20f
+    return when (sel.activeHandle) {
+        null -> floatArrayOf(baseLeft + dx, baseTop + dy, baseW, baseH)
+        ResizeHandle.TOP_LEFT -> {
+            val nl = (baseLeft + dx).coerceAtMost(baseLeft + baseW - minPx)
+            val nt = (baseTop  + dy).coerceAtMost(baseTop  + baseH - minPx)
+            floatArrayOf(nl, nt, baseLeft + baseW - nl, baseTop + baseH - nt)
+        }
+        ResizeHandle.TOP_RIGHT -> {
+            val nt = (baseTop + dy).coerceAtMost(baseTop + baseH - minPx)
+            val nw = (baseW + dx).coerceAtLeast(minPx)
+            floatArrayOf(baseLeft, nt, nw, baseTop + baseH - nt)
+        }
+        ResizeHandle.BOTTOM_LEFT -> {
+            val nl = (baseLeft + dx).coerceAtMost(baseLeft + baseW - minPx)
+            val nh = (baseH + dy).coerceAtLeast(minPx)
+            floatArrayOf(nl, baseTop, baseLeft + baseW - nl, nh)
+        }
+        ResizeHandle.BOTTOM_RIGHT -> floatArrayOf(baseLeft, baseTop, (baseW + dx).coerceAtLeast(minPx), (baseH + dy).coerceAtLeast(minPx))
     }
 }
 
