@@ -138,6 +138,7 @@ internal fun PdfAnnotationLayer(
     val density = LocalDensity.current
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
     var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
+    var lastDownWasStylus by remember { mutableStateOf(false) }
     var showPageContextMenu by remember { mutableStateOf(false) }
     var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
     var contextMenuSize by remember { mutableStateOf(IntSize.Zero) }
@@ -159,6 +160,7 @@ internal fun PdfAnnotationLayer(
         .pointerInput(page.nativeWidth, page.nativeHeight) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
+                lastDownWasStylus = down.type == PointerType.Stylus || down.type == PointerType.Eraser
                 val currentIndex = indexRef.value
                 val currentActions = actionsRef.value
 
@@ -371,7 +373,7 @@ internal fun PdfAnnotationLayer(
             modifier = Modifier.matchParentSize()
                 .pointerInput(page.links, page.words, page.highlights) {
                     detectTapGestures(
-                        onDoubleTap = { actions.onBarsVisibleToggle() },
+                        onDoubleTap = { if (!lastDownWasStylus) actions.onBarsVisibleToggle() },
                         onTap = { tapOffset ->
                             if (showPageContextMenu) {
                                 showPageContextMenu = false

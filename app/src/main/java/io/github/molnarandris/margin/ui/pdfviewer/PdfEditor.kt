@@ -168,16 +168,24 @@ class PdfEditor(
                 val strokeColor = parseColor(ann.getCOSObject())
                 val strokeThickness = parseThickness(ann.getCOSObject())
                 val roundCap = ann.getCOSObject().getDictionaryObject(COSName.AP) != null
+                val apPoints = parseApStrokePoints(ann.getCOSObject(), pageW, pageH)
                 for ((arrayIdx, strokeId) in ids.withIndex()) {
                     if (strokeId in strokeIdsToRemove) continue
                     val innerArr = outerArr.getObject(arrayIdx) as? COSArray ?: continue
-                    val points = mutableListOf<Offset>()
-                    var j = 0
-                    while (j + 1 < innerArr.size()) {
-                        val x = (innerArr.getObject(j) as? COSNumber)?.floatValue() ?: break
-                        val y = (innerArr.getObject(j + 1) as? COSNumber)?.floatValue() ?: break
-                        points.add(Offset(x / pageW, 1f - y / pageH))
-                        j += 2
+                    val inkListCount = innerArr.size() / 2
+                    val apStroke = apPoints?.getOrNull(arrayIdx)
+                    val points: List<Offset> = if (apStroke != null && apStroke.size > inkListCount) {
+                        apStroke
+                    } else {
+                        val pts = mutableListOf<Offset>()
+                        var j = 0
+                        while (j + 1 < innerArr.size()) {
+                            val x = (innerArr.getObject(j) as? COSNumber)?.floatValue() ?: break
+                            val y = (innerArr.getObject(j + 1) as? COSNumber)?.floatValue() ?: break
+                            pts.add(Offset(x / pageW, 1f - y / pageH))
+                            j += 2
+                        }
+                        pts
                     }
                     if (points.isNotEmpty()) survivors.add(
                         InkStroke(strokeId, points, strokeColor, strokeThickness, roundCap)
