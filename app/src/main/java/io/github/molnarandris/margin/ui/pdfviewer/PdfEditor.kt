@@ -639,13 +639,17 @@ class PdfEditor(
             (ann.annotationName ?: "").startsWith("img-")
         }
         pageAnnotations.removeAll(toRemove)
-        // Add current set
-        annotations.forEach { addImageAnnotationToPage(pdDoc, pdPage, it) }
+        // Insert image annotations before any ink annotations so they render below ink in PDF viewers
+        val firstInkIndex = pageAnnotations.indexOfFirst { ann ->
+            ann.getCOSObject().getNameAsString(COSName.SUBTYPE) == "Ink"
+        }
+        val insertAt = if (firstInkIndex >= 0) firstInkIndex else pageAnnotations.size
+        annotations.forEachIndexed { i, annot -> addImageAnnotationToPage(pdDoc, pdPage, annot, insertAt + i) }
         pdfRepository.save(pdDoc, uri)
         pdDoc.close()
     }
 
-    private fun addImageAnnotationToPage(pdDoc: PDDocument, pdPage: PDPage, annot: PdfImageAnnotation) {
+    private fun addImageAnnotationToPage(pdDoc: PDDocument, pdPage: PDPage, annot: PdfImageAnnotation, insertAt: Int = -1) {
         val mbox = pdPage.mediaBox
         val r = annot.rectNorm
         val pdfX = r.left  * mbox.width
@@ -686,7 +690,12 @@ class PdfEditor(
             setItem(COSName.RECT, rectArr)
             setItem(COSName.AP, apDict)
         }
-        pdPage.annotations.add(PDAnnotationUnknown(annotDict))
+        val annotations = pdPage.annotations
+        if (insertAt in 0 until annotations.size) {
+            annotations.add(insertAt, PDAnnotationUnknown(annotDict))
+        } else {
+            annotations.add(PDAnnotationUnknown(annotDict))
+        }
     }
 
     /**
