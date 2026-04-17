@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import io.github.molnarandris.margin.data.FileSystemItem
 import io.github.molnarandris.margin.data.PdfFile
 import io.github.molnarandris.margin.data.PdfRepository
+import io.github.molnarandris.margin.data.PdfType
 import io.github.molnarandris.margin.data.PreferencesRepository
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 enum class SortOrder { BY_NAME, BY_LAST_MODIFIED, BY_LAST_OPENED }
+enum class TypeFilter { ALL, DOCUMENT, NOTE }
 
 private fun List<FileSystemItem>.applySortOrder(order: SortOrder): List<FileSystemItem> {
     val pdfs = filterIsInstance<FileSystemItem.PdfItem>()
@@ -26,6 +28,12 @@ private fun List<FileSystemItem>.applySortOrder(order: SortOrder): List<FileSyst
         SortOrder.BY_LAST_MODIFIED -> pdfs.sortedByDescending { it.pdf.lastModified }
         SortOrder.BY_LAST_OPENED -> pdfs.sortedByDescending { it.pdf.lastOpened }
     }
+}
+
+private fun List<FileSystemItem>.applyTypeFilter(filter: TypeFilter): List<FileSystemItem> {
+    if (filter == TypeFilter.ALL) return this
+    val targetType = if (filter == TypeFilter.DOCUMENT) PdfType.DOCUMENT else PdfType.NOTE
+    return filterIsInstance<FileSystemItem.PdfItem>().filter { it.pdf.type == targetType }
 }
 
 private fun List<FileSystemItem>.applySearch(query: String): List<FileSystemItem> {
@@ -68,6 +76,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    private val _typeFilter = MutableStateFlow(TypeFilter.ALL)
+    val typeFilter: StateFlow<TypeFilter> = _typeFilter.asStateFlow()
+
     init {
         viewModelScope.launch {
             PdfRepository.pdfOpenedFlow.collect { (uri, timestamp) ->
@@ -77,7 +88,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         FileSystemItem.PdfItem(item.pdf.copy(lastOpened = timestamp))
                     else item
                 }.applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
             }
         }
         viewModelScope.launch {
@@ -91,7 +102,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     val allItems = pdfRepo.getAllPdfs()
                         .map { FileSystemItem.PdfItem(it) }
                         .applySortOrder(_sortOrder.value)
-                    _uiState.value = HomeUiState.Ready(uri, allItems, allItems.applySearch(_searchQuery.value))
+                    _uiState.value = HomeUiState.Ready(uri, allItems, allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
                 }
             }
         }
@@ -110,14 +121,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
         val state = _uiState.value as? HomeUiState.Ready ?: return
-        _uiState.value = state.copy(items = state.allItems.applySearch(query))
+        _uiState.value = state.copy(items = state.allItems.applyTypeFilter(_typeFilter.value).applySearch(query))
+    }
+
+    fun setTypeFilter(filter: TypeFilter) {
+        _typeFilter.value = filter
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        _uiState.value = state.copy(
+            items = state.allItems.applyTypeFilter(filter).applySearch(_searchQuery.value)
+        )
     }
 
     fun setSortOrder(order: SortOrder) {
         _sortOrder.value = order
         val state = _uiState.value as? HomeUiState.Ready ?: return
         val allItems = state.allItems.applySortOrder(order)
-        _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+        _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
         viewModelScope.launch { prefsRepo.saveSortOrder(order.name) }
     }
 
@@ -129,7 +148,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val allItems = pdfRepo.getAllPdfs()
                     .map { FileSystemItem.PdfItem(it) }
                     .applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
             }
         }
     }
@@ -143,7 +162,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val allItems = pdfRepo.getAllPdfs()
                     .map { FileSystemItem.PdfItem(it) }
                     .applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
             }
         }
     }
@@ -158,7 +177,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 val allItems = state.allItems.map {
                     if (it is FileSystemItem.PdfItem && it.pdf.uri == pdf.uri) newItem else it
                 }.applySortOrder(_sortOrder.value)
-                _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+                _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
             }
         }
     }
@@ -171,7 +190,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
         }
     }
 
@@ -182,7 +201,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
         }
     }
 
@@ -195,7 +214,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
             _isRefreshing.value = false
         }
     }
@@ -206,7 +225,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val allItems = pdfRepo.getAllPdfs()
                 .map { FileSystemItem.PdfItem(it) }
                 .applySortOrder(_sortOrder.value)
-            _uiState.value = state.copy(allItems = allItems, items = allItems.applySearch(_searchQuery.value))
+            _uiState.value = state.copy(allItems = allItems, items = allItems.applyTypeFilter(_typeFilter.value).applySearch(_searchQuery.value))
         }
     }
 }

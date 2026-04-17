@@ -13,6 +13,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -92,6 +94,7 @@ fun HomeScreen(
     val sortOrder by viewModel.sortOrder.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val typeFilter by viewModel.typeFilter.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -167,7 +170,20 @@ fun HomeScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text("Margin") },
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text("Margin")
+                            if (uiState is HomeUiState.Ready) {
+                                TypeFilterToggle(
+                                    selected = typeFilter,
+                                    onSelect = { viewModel.setTypeFilter(it) }
+                                )
+                            }
+                        }
+                    },
                     navigationIcon = {},
                     actions = {
                         if (uiState is HomeUiState.Ready) {
@@ -329,6 +345,44 @@ private fun relativePath(pdfUri: Uri, rootUri: Uri): String {
         else pdfUri.lastPathSegment ?: docId
     } catch (_: Exception) {
         pdfUri.lastPathSegment ?: pdfUri.toString()
+    }
+}
+
+@Composable
+private fun TypeFilterToggle(
+    selected: TypeFilter,
+    onSelect: (TypeFilter) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        listOf(TypeFilter.DOCUMENT to "Doc", TypeFilter.NOTE to "Note", TypeFilter.ALL to "All")
+            .forEach { (filter, label) ->
+                val isSelected = selected == filter
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) primary else onSurfaceVariant,
+                    modifier = Modifier
+                        .clickable { onSelect(filter) }
+                        .drawBehind {
+                            if (isSelected) {
+                                drawLine(
+                                    color = primary,
+                                    start = Offset(0f, size.height),
+                                    end = Offset(size.width, size.height),
+                                    strokeWidth = 2.dp.toPx()
+                                )
+                            }
+                        }
+                        .padding(bottom = 2.dp)
+                )
+            }
     }
 }
 
