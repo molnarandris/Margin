@@ -175,7 +175,13 @@ fun HomeScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Text("Margin")
+                            Text(
+                                "Margin",
+                                style = MaterialTheme.typography.headlineMedium.copy(
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Serif,
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                                )
+                            )
                             if (uiState is HomeUiState.Ready) {
                                 TypeFilterToggle(
                                     selected = typeFilter,
