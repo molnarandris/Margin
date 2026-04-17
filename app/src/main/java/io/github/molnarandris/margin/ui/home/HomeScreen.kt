@@ -131,7 +131,7 @@ fun HomeScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshContents()
                 val s = viewModel.sortOrder.value
-                if (s == SortOrder.BY_LAST_OPENED || s == SortOrder.BY_LAST_MODIFIED) {
+                if (s == SortOrder.BY_RECENT) {
                     scope.launch { listState.scrollToItem(0) }
                 }
             }
@@ -213,16 +213,9 @@ fun HomeScreen(
                                         } else null
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Last modified") },
-                                        onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_MODIFIED); showSortMenu = false },
-                                        trailingIcon = if (sortOrder == SortOrder.BY_LAST_MODIFIED) {
-                                            { Icon(Icons.Default.Check, contentDescription = null) }
-                                        } else null
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Last opened") },
-                                        onClick = { viewModel.setSortOrder(SortOrder.BY_LAST_OPENED); showSortMenu = false },
-                                        trailingIcon = if (sortOrder == SortOrder.BY_LAST_OPENED) {
+                                        text = { Text("Recent") },
+                                        onClick = { viewModel.setSortOrder(SortOrder.BY_RECENT); showSortMenu = false },
+                                        trailingIcon = if (sortOrder == SortOrder.BY_RECENT) {
                                             { Icon(Icons.Default.Check, contentDescription = null) }
                                         } else null
                                     )

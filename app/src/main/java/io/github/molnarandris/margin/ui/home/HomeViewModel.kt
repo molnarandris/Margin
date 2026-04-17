@@ -18,15 +18,14 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-enum class SortOrder { BY_NAME, BY_LAST_MODIFIED, BY_LAST_OPENED }
+enum class SortOrder { BY_NAME, BY_RECENT }
 enum class TypeFilter { ALL, DOCUMENT, NOTE }
 
 private fun List<FileSystemItem>.applySortOrder(order: SortOrder): List<FileSystemItem> {
     val pdfs = filterIsInstance<FileSystemItem.PdfItem>()
     return when (order) {
         SortOrder.BY_NAME -> pdfs.sortedBy { it.pdf.name }
-        SortOrder.BY_LAST_MODIFIED -> pdfs.sortedByDescending { it.pdf.lastModified }
-        SortOrder.BY_LAST_OPENED -> pdfs.sortedByDescending { it.pdf.lastOpened }
+        SortOrder.BY_RECENT -> pdfs.sortedByDescending { maxOf(it.pdf.lastModified, it.pdf.lastOpened) }
     }
 }
 
