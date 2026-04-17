@@ -417,7 +417,7 @@ internal fun PdfAnnotationLayer(
                                 if (imgHit != null) {
                                     actionsRef.value.onImageAnnotationSelectionChanged(
                                         ImageAnnotationSelection(
-                                            pageIndex = state.index,
+                                            pageIndex = indexRef.value,
                                             originalAnnotation = imgHit,
                                             annotation = imgHit,
                                         )
@@ -443,7 +443,7 @@ internal fun PdfAnnotationLayer(
                                         cVisualBot > r.top && cVisualTop < r.bottom
                                     }
                                 }
-                                actions.onTextSelectionChanged(PageTextSelection(state.index, hlChars, hitHighlight))
+                                actions.onTextSelectionChanged(PageTextSelection(indexRef.value, hlChars, hitHighlight))
                                 return@detectTapGestures
                             }
                             val hitWord = page.words.firstOrNull { w ->
@@ -452,7 +452,7 @@ internal fun PdfAnnotationLayer(
                                 prY >= visualTop && prY <= w.bounds.bottom
                             }
                             if (hitWord != null) {
-                                actions.onTextSelectionChanged(PageTextSelection(state.index, hitWord.chars))
+                                actions.onTextSelectionChanged(PageTextSelection(indexRef.value, hitWord.chars))
                             } else {
                                 contextMenuOffset = longPressOffset
                                 showPageContextMenu = true
