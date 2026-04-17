@@ -105,6 +105,10 @@ import kotlin.math.roundToInt
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -161,6 +165,16 @@ fun PdfViewerScreen(
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
     var noteDialogText   by remember { mutableStateOf("") }
     var currentPage by remember { mutableStateOf(viewModel.firstVisiblePageIndex) }
+    val tocBreadcrumb = remember(outline, currentPage) {
+        if (outline.isEmpty()) return@remember emptyList<String>()
+        val activeByLevel = sortedMapOf<Int, String>()
+        for (item in outline) {
+            if (item.pageIndex > currentPage) break
+            activeByLevel[item.level] = item.title
+            activeByLevel.keys.filter { it > item.level }.forEach { activeByLevel.remove(it) }
+        }
+        activeByLevel.values.toList()
+    }
 
     var topBarVisible by remember { mutableStateOf(true) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -428,6 +442,16 @@ fun PdfViewerScreen(
                 FloatingActionButton(onClick = { viewModel.importCurrentPdf() }) {
                     Icon(Icons.Default.Download, contentDescription = "Import to library")
                 }
+            }
+        },
+        bottomBar = {
+            if (topBarVisible) {
+                PdfViewerBottomBar(
+                    breadcrumb = tocBreadcrumb,
+                    currentPage = currentPage,
+                    totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0,
+                    onOpenOutline = { isOutlineVisible = true }
+                )
             }
         },
         topBar = { if (topBarVisible) {
@@ -1006,6 +1030,113 @@ private fun PageContent(
 
 
 
+@Composable
+private fun BreadcrumbText(
+    items: List<String>,
+    modifier: Modifier = Modifier,
+) {
+    val style = MaterialTheme.typography.labelSmall
+    val separator = " › "
+    SubcomposeLayout(modifier) { constraints ->
+        val maxWidth = constraints.maxWidth
+
+        // Measure separator width
+        val sepWidth = subcompose("sep") {
+            Text(separator, style = style, maxLines = 1)
+        }[0].measure(Constraints()).width
+        val totalSepWidth = (items.size - 1) * sepWidth
+        val available = (maxWidth - totalSepWidth).coerceAtLeast(0)
+
+        // Measure natural (unconstrained) widths
+        val naturalWidths = items.mapIndexed { i, text ->
+            subcompose("nat_$i") {
+                Text(text, style = style, maxLines = 1, softWrap = false)
+            }[0].measure(Constraints()).width
+        }
+
+        // Minimum width: just enough for a single ellipsis character
+        val ellipsisWidth = subcompose("ellipsis") {
+            Text("…", style = style)
+        }[0].measure(Constraints()).width
+
+        // Reduce widths from the front until everything fits
+        val allocatedWidths = naturalWidths.toIntArray()
+        var excess = allocatedWidths.sum() - available
+        for (i in items.indices) {
+            if (excess <= 0) break
+            val canReduce = (allocatedWidths[i] - ellipsisWidth).coerceAtLeast(0)
+            val reduce = minOf(excess, canReduce)
+            allocatedWidths[i] -= reduce
+            excess -= reduce
+        }
+
+        // Final measurement with allocated widths
+        val itemPlaceables = items.mapIndexed { i, text ->
+            subcompose("item_$i") {
+                Text(text, style = style, maxLines = 1, overflow = TextOverflow.Ellipsis, softWrap = false)
+            }[0].measure(Constraints(maxWidth = allocatedWidths[i].coerceAtLeast(0)))
+        }
+        val sepPlaceables = (0 until items.size - 1).map { i ->
+            subcompose("sep_$i") {
+                Text(separator, style = style, maxLines = 1)
+            }[0].measure(Constraints())
+        }
+
+        val height = maxOf(
+            itemPlaceables.maxOfOrNull { it.height } ?: 0,
+            sepPlaceables.maxOfOrNull { it.height } ?: 0
+        )
+        layout(maxWidth, height) {
+            var x = 0
+            items.indices.forEach { i ->
+                itemPlaceables[i].placeRelative(x, (height - itemPlaceables[i].height) / 2)
+                x += allocatedWidths[i]
+                if (i < sepPlaceables.size) {
+                    sepPlaceables[i].placeRelative(x, (height - sepPlaceables[i].height) / 2)
+                    x += sepWidth
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PdfViewerBottomBar(
+    breadcrumb: List<String>,
+    currentPage: Int,
+    totalPages: Int,
+    onOpenOutline: () -> Unit
+) {
+    Surface(
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .height(36.dp)
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            BreadcrumbText(
+                items = breadcrumb,
+                modifier = Modifier
+                    .weight(1f)
+                    .pointerInput(Unit) {
+                        detectTapGestures(onLongPress = { onOpenOutline() })
+                    }
+            )
+            if (totalPages > 0) {
+                Text(
+                    text = "${currentPage + 1} / $totalPages",
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun DotLeaderOutlineText(
