@@ -79,6 +79,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.molnarandris.margin.data.FileSystemItem
 import io.github.molnarandris.margin.data.PdfFile
@@ -179,7 +180,8 @@ fun HomeScreen(
                                 "Margin",
                                 style = MaterialTheme.typography.headlineMedium.copy(
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Serif,
-                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                                    letterSpacing = 0.04.em
                                 )
                             )
                             if (uiState is HomeUiState.Ready) {
