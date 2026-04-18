@@ -191,6 +191,30 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         pushUndo(UndoableAction.PageJumped(fromPage, toPage))
     }
 
+    private val _tocUndoMessage = MutableStateFlow<String?>(null)
+    val tocUndoMessage: StateFlow<String?> = _tocUndoMessage.asStateFlow()
+    fun clearTocUndoMessage() { _tocUndoMessage.value = null }
+
+    fun updateOutline(newItems: List<OutlineItem>) {
+        val recomputed = newItems.mapIndexed { i, item ->
+            item.copy(hasChildren = i + 1 < newItems.size && newItems[i + 1].level > item.level)
+        }
+        pushUndo(UndoableAction.OutlineChanged(_outline.value, recomputed))
+        _outline.value = recomputed
+        launchSave {
+            val uri = docUri ?: return@launchSave
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+                pdfEditor.writeOutlineToPdf(uri, recomputed)
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
+            }
+        }
+    }
+
     private fun findHighlightByBounds(pageIndex: Int, bounds: List<RectF>): PdfHighlight? {
         val state = _uiState.value as? PdfViewerUiState.Ready ?: return null
         return state.pages.getOrNull(pageIndex)?.highlights?.firstOrNull { it.bounds == bounds }
@@ -226,6 +250,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     addImageAnnotationDirectly(action.pageIndex, action.annotation)
                 is UndoableAction.ImageAnnotationTransformed ->
                     replaceImageAnnotationDirectly(action.pageIndex, action.new, action.old)
+                is UndoableAction.OutlineChanged -> {
+                    updateOutline(action.oldOutline)
+                    _tocUndoMessage.value = "TOC edit undone"
+                }
             }
         } finally {
             isUndoRedoInProgress = false
@@ -263,6 +291,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     removeImageAnnotationDirectly(action.pageIndex, action.annotation.id)
                 is UndoableAction.ImageAnnotationTransformed ->
                     replaceImageAnnotationDirectly(action.pageIndex, action.old, action.new)
+                is UndoableAction.OutlineChanged -> {
+                    updateOutline(action.newOutline)
+                    _tocUndoMessage.value = "TOC edit redone"
+                }
             }
         } finally {
             isUndoRedoInProgress = false

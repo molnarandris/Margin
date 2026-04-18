@@ -24,7 +24,10 @@ import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitWidthDestination
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDDocumentOutline
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import io.github.molnarandris.margin.data.PdfRepository
@@ -446,6 +449,25 @@ class PdfEditor(
         return result.mapIndexed { i, item ->
             item.copy(hasChildren = i + 1 < result.size && result[i + 1].level > result[i].level)
         }
+    }
+
+    suspend fun writeOutlineToPdf(uri: Uri, items: List<OutlineItem>) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        val root = PDDocumentOutline()
+        pdDoc.documentCatalog.documentOutline = root
+        val stack = mutableListOf<PDOutlineNode>(root)
+        for (item in items) {
+            val node = PDOutlineItem()
+            node.title = item.title
+            val dest = PDPageFitWidthDestination()
+            dest.page = pdDoc.getPage(item.pageIndex)
+            node.destination = dest
+            while (stack.size > item.level + 1) stack.removeLast()
+            stack.last().addLast(node)
+            stack.add(node)
+        }
+        pdfRepository.save(pdDoc, uri)
+        pdDoc.close()
     }
 
     // ---- Private Helpers ----

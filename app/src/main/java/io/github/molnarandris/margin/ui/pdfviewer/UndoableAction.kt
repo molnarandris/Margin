@@ -15,4 +15,5 @@ sealed class UndoableAction {
     data class ImageAnnotationAdded(val pageIndex: Int, val annotation: PdfImageAnnotation) : UndoableAction()
     data class ImageAnnotationDeleted(val pageIndex: Int, val annotation: PdfImageAnnotation) : UndoableAction()
     data class ImageAnnotationTransformed(val pageIndex: Int, val old: PdfImageAnnotation, val new: PdfImageAnnotation) : UndoableAction()
+    data class OutlineChanged(val oldOutline: List<OutlineItem>, val newOutline: List<OutlineItem>) : UndoableAction()
 }
