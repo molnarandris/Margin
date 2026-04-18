@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -40,12 +39,16 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.InputChip
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
@@ -70,6 +73,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -375,7 +379,6 @@ fun PdfViewerScreen(
     }
 
     if (isOutlineVisible) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         val visibleItems = remember(outline, collapsed) {
             buildList {
                 var collapseAtLevel = -1
@@ -387,48 +390,73 @@ fun PdfViewerScreen(
                 }
             }
         }
-        ModalBottomSheet(
+        Dialog(
             onDismissRequest = { isOutlineVisible = false },
-            sheetState = sheetState
+            properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            LazyColumn(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
-                items(visibleItems, key = { it.first }) { (index, item) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .animateItem()
-                            .clickable {
-                                viewModel.recordPageJump(currentPage, item.pageIndex)
-                                currentPage = item.pageIndex
-                                isOutlineVisible = false
-                            }
-                            .padding(
-                                start = (16 + item.level * 24).dp,
-                                end = 8.dp, top = 12.dp, bottom = 12.dp
-                            ),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (item.hasChildren) {
-                            Icon(
-                                imageVector = if (index in collapsed)
-                                    Icons.AutoMirrored.Filled.KeyboardArrowRight
-                                else
-                                    Icons.Default.KeyboardArrowDown,
-                                contentDescription = if (index in collapsed) "Expand" else "Collapse",
+            val dialogWindowProvider = LocalView.current.parent as? androidx.compose.ui.window.DialogWindowProvider
+            SideEffect {
+                dialogWindowProvider?.window?.setDimAmount(0.15f)
+            }
+            val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp.coerceAtLeast(240.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) { isOutlineVisible = false }
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth(0.65f)
+                        .heightIn(max = maxHeight)
+                        .clickable(enabled = false, onClick = {}),
+                    shape = RoundedCornerShape(topEnd = 16.dp),
+                    tonalElevation = 8.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    LazyColumn(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
+                        items(visibleItems, key = { it.first }) { (index, item) ->
+                            Row(
                                 modifier = Modifier
-                                    .size(20.dp)
+                                    .fillMaxWidth()
+                                    .animateItem()
                                     .clickable {
-                                        collapsed = if (index in collapsed)
-                                            collapsed - index else collapsed + index
+                                        viewModel.recordPageJump(currentPage, item.pageIndex)
+                                        currentPage = item.pageIndex
+                                        isOutlineVisible = false
                                     }
-                            )
+                                    .padding(
+                                        start = (16 + item.level * 24).dp,
+                                        end = 8.dp, top = 12.dp, bottom = 12.dp
+                                    ),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (item.hasChildren) {
+                                    Icon(
+                                        imageVector = if (index in collapsed)
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight
+                                        else
+                                            Icons.Default.KeyboardArrowDown,
+                                        contentDescription = if (index in collapsed) "Expand" else "Collapse",
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clickable {
+                                                collapsed = if (index in collapsed)
+                                                    collapsed - index else collapsed + index
+                                            }
+                                    )
+                                }
+                                DotLeaderOutlineText(
+                                    title = item.title,
+                                    pageNum = item.pageIndex + 1,
+                                    fontWeight = if (item.level == 0) FontWeight.Bold else null,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
-                        DotLeaderOutlineText(
-                            title = item.title,
-                            pageNum = item.pageIndex + 1,
-                            fontWeight = if (item.level == 0) FontWeight.Bold else null,
-                            modifier = Modifier.weight(1f)
-                        )
                     }
                 }
             }
