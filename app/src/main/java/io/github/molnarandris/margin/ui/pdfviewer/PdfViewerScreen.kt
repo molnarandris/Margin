@@ -10,6 +10,7 @@ import java.io.File
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -33,10 +34,14 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.InputChip
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -114,6 +119,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material3.Surface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -125,7 +131,7 @@ import kotlinx.coroutines.withContext
 
 private data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
 
-@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun PdfViewerScreen(
     dirUri: Uri? = null,
@@ -153,6 +159,10 @@ fun PdfViewerScreen(
     val outline by viewModel.outline.collectAsState()
     var isOutlineVisible by remember { mutableStateOf(false) }
     var collapsed by remember { mutableStateOf(emptySet<Int>()) }
+    var tocContextMenuIndex by remember { mutableStateOf<Int?>(null) }
+    var tocRenameIndex by remember { mutableStateOf<Int?>(null) }
+    var tocRenameText by remember { mutableStateOf("") }
+    var tocDeleteIndex by remember { mutableStateOf<Int?>(null) }
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -228,11 +238,18 @@ fun PdfViewerScreen(
     val isExternalPdf by viewModel.isExternalPdf.collectAsState()
     val isImported by viewModel.isImported.collectAsState()
     val importMessage by viewModel.importMessage.collectAsState()
+    val tocUndoMessage by viewModel.tocUndoMessage.collectAsState()
 
     LaunchedEffect(importMessage) {
         val msg = importMessage ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(msg)
         viewModel.clearImportMessage()
+    }
+
+    LaunchedEffect(tocUndoMessage) {
+        val msg = tocUndoMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(msg)
+        viewModel.clearTocUndoMessage()
     }
     DisposableEffect(keepScreenOn) {
         view.keepScreenOn = keepScreenOn
@@ -391,7 +408,7 @@ fun PdfViewerScreen(
             }
         }
         Dialog(
-            onDismissRequest = { isOutlineVisible = false },
+            onDismissRequest = { isOutlineVisible = false; tocContextMenuIndex = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             val dialogWindowProvider = LocalView.current.parent as? androidx.compose.ui.window.DialogWindowProvider
@@ -405,13 +422,13 @@ fun PdfViewerScreen(
                     .clickable(
                         indication = null,
                         interactionSource = remember { MutableInteractionSource() }
-                    ) { isOutlineVisible = false }
+                    ) { isOutlineVisible = false; tocContextMenuIndex = null }
             ) {
                 Surface(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .fillMaxWidth(0.65f)
-                        .heightIn(max = maxHeight)
+                        .height(maxHeight)
                         .clickable(enabled = false, onClick = {}),
                     shape = RoundedCornerShape(topEnd = 16.dp),
                     tonalElevation = 8.dp,
@@ -419,47 +436,229 @@ fun PdfViewerScreen(
                 ) {
                     LazyColumn(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
                         items(visibleItems, key = { it.first }) { (index, item) ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .animateItem()
-                                    .clickable {
-                                        viewModel.recordPageJump(currentPage, item.pageIndex)
-                                        currentPage = item.pageIndex
-                                    }
-                                    .padding(
-                                        start = (16 + item.level * 24).dp,
-                                        end = 8.dp, top = 12.dp, bottom = 12.dp
-                                    ),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (item.hasChildren) {
-                                    Icon(
-                                        imageVector = if (index in collapsed)
-                                            Icons.AutoMirrored.Filled.KeyboardArrowRight
-                                        else
-                                            Icons.Default.KeyboardArrowDown,
-                                        contentDescription = if (index in collapsed) "Expand" else "Collapse",
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .clickable {
-                                                collapsed = if (index in collapsed)
-                                                    collapsed - index else collapsed + index
+                            Column(modifier = Modifier.fillMaxWidth().animateItem()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .combinedClickable(
+                                            onClick = {
+                                                viewModel.recordPageJump(currentPage, item.pageIndex)
+                                                currentPage = item.pageIndex
+                                            },
+                                            onLongClick = {
+                                                tocContextMenuIndex = if (tocContextMenuIndex == index) null else index
                                             }
+                                        )
+                                        .padding(
+                                            start = (16 + item.level * 24).dp,
+                                            end = 8.dp, top = 12.dp, bottom = 12.dp
+                                        ),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (item.hasChildren) {
+                                        Icon(
+                                            imageVector = if (index in collapsed)
+                                                Icons.AutoMirrored.Filled.KeyboardArrowRight
+                                            else
+                                                Icons.Default.KeyboardArrowDown,
+                                            contentDescription = if (index in collapsed) "Expand" else "Collapse",
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .clickable {
+                                                    collapsed = if (index in collapsed)
+                                                        collapsed - index else collapsed + index
+                                                }
+                                        )
+                                    }
+                                    DotLeaderOutlineText(
+                                        title = item.title,
+                                        pageNum = item.pageIndex + 1,
+                                        fontWeight = if (item.level == 0) FontWeight.Bold else null,
+                                        modifier = Modifier.weight(1f)
                                     )
                                 }
-                                DotLeaderOutlineText(
-                                    title = item.title,
-                                    pageNum = item.pageIndex + 1,
-                                    fontWeight = if (item.level == 0) FontWeight.Bold else null,
-                                    modifier = Modifier.weight(1f)
-                                )
+                                if (tocContextMenuIndex == index) {
+                                    val groupEnd = run {
+                                        var e = index + 1
+                                        while (e < outline.size && outline[e].level > item.level) e++
+                                        e
+                                    }
+                                    val prevGroupStart = (0 until index).lastOrNull { outline[it].level <= item.level }
+                                    val nextSiblingStart = groupEnd.takeIf { it < outline.size }
+                                    val maxLevel = if (index > 0) outline[index - 1].level + 1 else 0
+                                    Surface(
+                                        tonalElevation = 4.dp,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = (16 + item.level * 24).dp, end = 8.dp, bottom = 4.dp)
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.SpaceEvenly,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            IconButton(
+                                                enabled = prevGroupStart != null,
+                                                onClick = {
+                                                    val ps = prevGroupStart ?: return@IconButton
+                                                    val newList = outline.toMutableList()
+                                                    val group = newList.subList(index, groupEnd).toList()
+                                                    val before = newList.subList(ps, index).toList()
+                                                    repeat(groupEnd - ps) { newList.removeAt(ps) }
+                                                    newList.addAll(ps, before)
+                                                    newList.addAll(ps, group)
+                                                    viewModel.updateOutline(newList)
+                                                    tocContextMenuIndex = ps
+                                                }
+                                            ) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up") }
+                                            IconButton(
+                                                enabled = nextSiblingStart != null,
+                                                onClick = {
+                                                    val ns = nextSiblingStart ?: return@IconButton
+                                                    var nsEnd = ns + 1
+                                                    while (nsEnd < outline.size && outline[nsEnd].level > outline[ns].level) nsEnd++
+                                                    val newList = outline.toMutableList()
+                                                    val group = newList.subList(index, groupEnd).toList()
+                                                    val after = newList.subList(groupEnd, nsEnd).toList()
+                                                    repeat(nsEnd - index) { newList.removeAt(index) }
+                                                    newList.addAll(index, after)
+                                                    newList.addAll(index + after.size, group)
+                                                    viewModel.updateOutline(newList)
+                                                    tocContextMenuIndex = index + after.size
+                                                }
+                                            ) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down") }
+                                            IconButton(
+                                                enabled = item.level > 0,
+                                                onClick = {
+                                                    val newList = outline.toMutableList()
+                                                    for (i in index until groupEnd) newList[i] = newList[i].copy(level = (newList[i].level - 1).coerceAtLeast(0))
+                                                    viewModel.updateOutline(newList)
+                                                }
+                                            ) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Decrease level") }
+                                            IconButton(
+                                                enabled = item.level < maxLevel,
+                                                onClick = {
+                                                    val newList = outline.toMutableList()
+                                                    for (i in index until groupEnd) newList[i] = newList[i].copy(level = newList[i].level + 1)
+                                                    viewModel.updateOutline(newList)
+                                                }
+                                            ) { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Increase level") }
+                                            IconButton(onClick = {
+                                                tocRenameIndex = index
+                                                tocRenameText = item.title
+                                                tocContextMenuIndex = null
+                                            }) { Icon(Icons.Default.Edit, contentDescription = "Rename") }
+                                            IconButton(onClick = {
+                                                if (item.hasChildren) {
+                                                    tocDeleteIndex = index
+                                                    tocContextMenuIndex = null
+                                                } else {
+                                                    val snapshot = outline.toList()
+                                                    val newList = outline.toMutableList()
+                                                    newList.removeAt(index)
+                                                    viewModel.updateOutline(newList)
+                                                    tocContextMenuIndex = null
+                                                    outerScope.launch {
+                                                        val dismissJob = launch { delay(3000); snackbarHostState.currentSnackbarData?.dismiss() }
+                                                        val result = snackbarHostState.showSnackbar("TOC entry removed", actionLabel = "Undo")
+                                                        dismissJob.cancel()
+                                                        if (result == SnackbarResult.ActionPerformed) viewModel.updateOutline(snapshot)
+                                                    }
+                                                }
+                                            }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    if (tocRenameIndex != null) {
+        val idx = tocRenameIndex!!
+        AlertDialog(
+            onDismissRequest = { tocRenameIndex = null },
+            title = { Text("Rename TOC entry") },
+            text = {
+                OutlinedTextField(
+                    value = tocRenameText,
+                    onValueChange = { tocRenameText = it },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val newList = outline.toMutableList()
+                    newList[idx] = newList[idx].copy(title = tocRenameText)
+                    viewModel.updateOutline(newList)
+                    tocRenameIndex = null
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { tocRenameIndex = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (tocDeleteIndex != null) {
+        val idx = tocDeleteIndex!!
+        val deletedItem = outline[idx]
+        val groupEnd = run {
+            var e = idx + 1
+            while (e < outline.size && outline[e].level > deletedItem.level) e++
+            e
+        }
+        fun doDelete(newList: List<OutlineItem>) {
+            val snapshot = outline.toList()
+            viewModel.updateOutline(newList)
+            tocDeleteIndex = null
+            outerScope.launch {
+                val dismissJob = launch { delay(3000); snackbarHostState.currentSnackbarData?.dismiss() }
+                val result = snackbarHostState.showSnackbar("TOC entry removed", actionLabel = "Undo")
+                dismissJob.cancel()
+                if (result == SnackbarResult.ActionPerformed) viewModel.updateOutline(snapshot)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { tocDeleteIndex = null },
+            title = { Text("Delete \"${deletedItem.title}\"") },
+            text = {
+                Column {
+                    Text("This entry has children. Choose what to do with them.")
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            doDelete(outline.toMutableList().also { it.subList(idx, groupEnd).clear() })
+                        }
+                    ) { Text("Delete including children") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            val newList = outline.toMutableList()
+                            newList.removeAt(idx)
+                            for (i in idx until idx + (groupEnd - idx - 1))
+                                newList[i] = newList[i].copy(level = newList[i].level - 1)
+                            doDelete(newList)
+                        }
+                    ) { Text("Delete entry, promote children") }
+                    if (deletedItem.level > 0) {
+                        TextButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = {
+                                doDelete(outline.toMutableList().also { it.removeAt(idx) })
+                            }
+                        ) { Text("Delete entry, keep children level") }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { tocDeleteIndex = null }) { Text("Cancel") }
+            }
+        )
     }
 
     Scaffold(
@@ -1154,6 +1353,7 @@ private fun PdfViewerBottomBar(
                 items = breadcrumb,
                 modifier = Modifier
                     .weight(1f)
+                    .padding(end = 8.dp)
                     .pointerInput(Unit) {
                         detectTapGestures(onLongPress = { onOpenOutline() })
                     }
