@@ -426,7 +426,6 @@ fun PdfViewerScreen(
                                     .clickable {
                                         viewModel.recordPageJump(currentPage, item.pageIndex)
                                         currentPage = item.pageIndex
-                                        isOutlineVisible = false
                                     }
                                     .padding(
                                         start = (16 + item.level * 24).dp,
