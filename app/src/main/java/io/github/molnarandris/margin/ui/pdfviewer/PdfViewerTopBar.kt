@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
@@ -63,7 +62,6 @@ fun PdfViewerTopBar(
     canRedo: Boolean,
     penThickness: StrokeThickness,
     penColor: StrokeColor,
-    outline: List<OutlineItem>,
     onBack: () -> Unit,
     onOpenPdf: (Uri, String) -> Unit,
     onSearchQueryChange: (String) -> Unit,
@@ -75,7 +73,6 @@ fun PdfViewerTopBar(
     onRedo: () -> Unit,
     onPenThicknessChange: (StrokeThickness) -> Unit,
     onPenColorChange: (StrokeColor) -> Unit,
-    onOpenOutline: () -> Unit,
     onEditMetadata: () -> Unit,
     onInsertPhoto: () -> Unit,
 ) {
@@ -183,11 +180,6 @@ fun PdfViewerTopBar(
                 Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 IconButton(onClick = onOpenSearch) {
                     Icon(Icons.Default.Search, contentDescription = "Search")
-                }
-                if (outline.isNotEmpty()) {
-                    IconButton(onClick = onOpenOutline) {
-                        Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
-                    }
                 }
             }
         }

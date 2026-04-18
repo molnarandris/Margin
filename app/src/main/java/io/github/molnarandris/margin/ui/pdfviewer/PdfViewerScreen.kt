@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.requiredWidth
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.size
@@ -450,6 +451,7 @@ fun PdfViewerScreen(
                     breadcrumb = tocBreadcrumb,
                     currentPage = currentPage,
                     totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0,
+                    outline = outline,
                     onOpenOutline = { isOutlineVisible = true }
                 )
             }
@@ -469,7 +471,6 @@ fun PdfViewerScreen(
                 canRedo = canRedo,
                 penThickness = penThickness,
                 penColor = penColor,
-                outline = outline,
                 onBack = onBack,
                 onOpenPdf = onOpenPdf,
                 onSearchQueryChange = { searchQuery = it },
@@ -485,7 +486,6 @@ fun PdfViewerScreen(
                 onRedo = { viewModel.redo() },
                 onPenThicknessChange = { viewModel.setPenThickness(it) },
                 onPenColorChange = { viewModel.setPenColor(it) },
-                onOpenOutline = { isOutlineVisible = true },
                 onInsertPhoto = {
                     val photoFile = File(context.cacheDir, "photos/camera_${System.currentTimeMillis()}.jpg")
                         .also { it.parentFile?.mkdirs() }
@@ -1105,6 +1105,7 @@ private fun PdfViewerBottomBar(
     breadcrumb: List<String>,
     currentPage: Int,
     totalPages: Int,
+    outline: List<OutlineItem>,
     onOpenOutline: () -> Unit
 ) {
     Surface(
@@ -1120,6 +1121,11 @@ private fun PdfViewerBottomBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
+            if (outline.isNotEmpty()) {
+                IconButton(onClick = onOpenOutline, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Table of contents")
+                }
+            }
             BreadcrumbText(
                 items = breadcrumb,
                 modifier = Modifier
