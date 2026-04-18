@@ -1136,13 +1136,10 @@ private fun PdfViewerBottomBar(
     outline: List<OutlineItem>,
     onOpenOutline: () -> Unit
 ) {
-    Surface(
-        tonalElevation = 2.dp,
-        shadowElevation = 4.dp
-    ) {
-        Row(
+    Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .background(Color(0xFFE0E0E0))
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .height(36.dp)
                 .padding(horizontal = 16.dp),
@@ -1169,7 +1166,6 @@ private fun PdfViewerBottomBar(
                 )
             }
         }
-    }
 }
 
 @Composable
