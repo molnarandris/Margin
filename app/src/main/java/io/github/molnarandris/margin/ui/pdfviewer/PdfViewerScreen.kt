@@ -188,7 +188,12 @@ fun PdfViewerScreen(
             activeByLevel[item.level] = item.title
             activeByLevel.keys.filter { it > item.level }.forEach { activeByLevel.remove(it) }
         }
-        activeByLevel.values.toList()
+        val result = activeByLevel.values.toList()
+        val topLevelItems = outline.filter { it.level == 0 }
+        if (topLevelItems.size == 1 && result.size > 1) {
+            val topPage = topLevelItems[0].pageIndex
+            if (outline.any { it.level > 0 && it.pageIndex == topPage }) result.drop(1) else result
+        } else result
     }
 
     var topBarVisible by remember { mutableStateOf(true) }
