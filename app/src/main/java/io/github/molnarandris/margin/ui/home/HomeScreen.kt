@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -81,6 +82,7 @@ import androidx.compose.ui.unit.em
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.molnarandris.margin.data.FileSystemItem
 import io.github.molnarandris.margin.data.PdfFile
+import io.github.molnarandris.margin.data.PdfType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -442,8 +444,12 @@ private fun ContentList(
             val title = pdf.title.takeIf { it.isNotBlank() } ?: relativePath(pdf.uri, rootUri)
             val authorsText = pdf.authors.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
             val filename = relativePath(pdf.uri, rootUri)
+            val icon = if (pdf.type == PdfType.NOTE) Icons.Default.Description else Icons.Default.PictureAsPdf
             Box {
                 ListItem(
+                    leadingContent = {
+                        Icon(imageVector = icon, contentDescription = null)
+                    },
                     headlineContent = { Text(title) },
                     supportingContent = {
                         Column {
