@@ -3,6 +3,8 @@ package io.github.molnarandris.margin.ui.pdfviewer
 import android.content.Intent
 import android.graphics.RectF
 import android.net.Uri
+import android.provider.DocumentsContract
+import io.github.molnarandris.margin.ui.common.EditMetadataDialog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
@@ -31,21 +33,15 @@ import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.InputChip
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -131,7 +127,7 @@ import kotlinx.coroutines.withContext
 
 private data class JumpOrigin(val pageIndex: Int, val scrollOffset: Int, val highlightX: Float, val highlightY: Float)
 
-@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalFoundationApi::class)
 @Composable
 fun PdfViewerScreen(
     dirUri: Uri? = null,
@@ -168,15 +164,11 @@ fun PdfViewerScreen(
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    val pdfTitle    by viewModel.displayTitle.collectAsState()
-    val pdfAuthors  by viewModel.displayAuthors.collectAsState()
-    val pdfProjects by viewModel.displayProjects.collectAsState()
+    val pdfTitle      by viewModel.displayTitle.collectAsState()
+    val pdfAuthors    by viewModel.displayAuthors.collectAsState()
+    val pdfProjects   by viewModel.displayProjects.collectAsState()
+    val pdfCreatedAt  by viewModel.displayCreatedAt.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
-    var titleEditText  by remember { mutableStateOf("") }
-    var authorChips    by remember { mutableStateOf<List<String>>(emptyList()) }
-    var newAuthorText  by remember { mutableStateOf("") }
-    var projectChips   by remember { mutableStateOf<List<String>>(emptyList()) }
-    var newProjectText by remember { mutableStateOf("") }
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
     var noteDialogText   by remember { mutableStateOf("") }
     var currentPage by remember { mutableStateOf(viewModel.firstVisiblePageIndex) }
@@ -281,98 +273,25 @@ fun PdfViewerScreen(
     }
 
     if (isEditDialogVisible) {
-        AlertDialog(
-            onDismissRequest = { isEditDialogVisible = false },
-            title = { Text("Edit Document Info") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = titleEditText,
-                        onValueChange = { titleEditText = it },
-                        label = { Text("Title") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (authorChips.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            authorChips.forEach { author ->
-                                InputChip(
-                                    selected = false,
-                                    onClick = {},
-                                    label = { Text(author) },
-                                    trailingIcon = {
-                                        IconButton(onClick = { authorChips = authorChips - author }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Remove")
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = newAuthorText,
-                            onValueChange = { newAuthorText = it },
-                            label = { Text("Add author") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = {
-                            val trimmed = newAuthorText.trim()
-                            if (trimmed.isNotEmpty() && trimmed !in authorChips) {
-                                authorChips = authorChips + trimmed
-                            }
-                            newAuthorText = ""
-                        }) {
-                            Icon(Icons.Default.Add, contentDescription = "Add author")
-                        }
-                    }
-                    if (projectChips.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            projectChips.forEach { project ->
-                                InputChip(
-                                    selected = false,
-                                    onClick = {},
-                                    label = { Text(project) },
-                                    trailingIcon = {
-                                        IconButton(onClick = { projectChips = projectChips - project }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Remove")
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = newProjectText,
-                            onValueChange = { newProjectText = it },
-                            label = { Text("Add project") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = {
-                            val trimmed = newProjectText.trim()
-                            if (trimmed.isNotEmpty() && trimmed !in projectChips) {
-                                projectChips = projectChips + trimmed
-                            }
-                            newProjectText = ""
-                        }) {
-                            Icon(Icons.Default.Add, contentDescription = "Add project")
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.setMetadata(titleEditText, authorChips, projectChips)
+        val docUri = when {
+            dirUri != null && docId != null -> DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
+            externalUri != null -> externalUri
+            else -> null
+        }
+        if (docUri != null) {
+            EditMetadataDialog(
+                title = pdfTitle,
+                authors = pdfAuthors,
+                createdAt = pdfCreatedAt,
+                fileUri = docUri,
+                rootUri = dirUri,
+                onSave = { newTitle, newAuthors ->
+                    viewModel.setMetadata(newTitle, newAuthors, pdfProjects)
                     isEditDialogVisible = false
-                }) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { isEditDialogVisible = false }) { Text("Cancel") }
-            }
-        )
+                },
+                onDismiss = { isEditDialogVisible = false }
+            )
+        }
     }
 
     val noteTarget = noteDialogTarget
@@ -724,14 +643,7 @@ fun PdfViewerScreen(
                     cameraImageUri = uri
                     takePicture.launch(uri)
                 },
-                onEditMetadata = {
-                    titleEditText  = pdfTitle
-                    authorChips    = pdfAuthors
-                    newAuthorText  = ""
-                    projectChips   = pdfProjects
-                    newProjectText = ""
-                    isEditDialogVisible = true
-                }
+                onEditMetadata = { isEditDialogVisible = true }
             )
         } },
     ) { innerPadding ->

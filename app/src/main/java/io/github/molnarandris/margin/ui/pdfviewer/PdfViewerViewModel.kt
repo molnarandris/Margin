@@ -116,6 +116,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _displayProjects = MutableStateFlow<List<String>>(emptyList())
     val displayProjects: StateFlow<List<String>> = _displayProjects.asStateFlow()
 
+    private val _displayCreatedAt = MutableStateFlow(0L)
+    val displayCreatedAt: StateFlow<Long> = _displayCreatedAt.asStateFlow()
+
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
 
@@ -1093,10 +1096,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
                     ?: emptyList()
                 val projects = PdfRepository.readProjectsFromXmp(pdDoc)
+                val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthors.value = authors
                     _displayProjects.value = projects
+                    _displayCreatedAt.value = createdAt
                 }
 
                 // Extract outline (fast — just traverses bookmark tree)
@@ -1274,10 +1279,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
                     ?: emptyList()
                 val projects = PdfRepository.readProjectsFromXmp(pdDoc)
+                val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthors.value = authors
                     _displayProjects.value = projects
+                    _displayCreatedAt.value = createdAt
                 }
 
                 val outline = pdfEditor.extractOutline(pdDoc)

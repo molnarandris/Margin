@@ -2,6 +2,7 @@ package io.github.molnarandris.margin.ui.home
 
 import android.net.Uri
 import android.provider.DocumentsContract
+import io.github.molnarandris.margin.ui.common.EditMetadataDialog
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
@@ -42,10 +43,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapVert
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.InputChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -387,7 +385,7 @@ private fun TypeFilterToggle(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ContentList(
     items: List<FileSystemItem>,
@@ -420,100 +418,17 @@ private fun ContentList(
     }
 
     editTarget?.let { pdf ->
-        var title by rememberSaveable(pdf.uri) { mutableStateOf(pdf.title) }
-        var authorChips by remember(pdf.uri) { mutableStateOf(pdf.authors) }
-        var newAuthorText by rememberSaveable(pdf.uri) { mutableStateOf("") }
-        var projectChips by remember(pdf.uri) { mutableStateOf(pdf.projects) }
-        var newProjectText by rememberSaveable(pdf.uri) { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { editTarget = null },
-            title = { Text("Edit metadata") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = { title = it },
-                        label = { Text("Title") },
-                        singleLine = true
-                    )
-                    if (authorChips.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            authorChips.forEach { author ->
-                                InputChip(
-                                    selected = false,
-                                    onClick = {},
-                                    label = { Text(author) },
-                                    trailingIcon = {
-                                        IconButton(onClick = { authorChips = authorChips - author }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Remove")
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = newAuthorText,
-                            onValueChange = { newAuthorText = it },
-                            label = { Text("Add author") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = {
-                            val trimmed = newAuthorText.trim()
-                            if (trimmed.isNotEmpty() && trimmed !in authorChips) {
-                                authorChips = authorChips + trimmed
-                            }
-                            newAuthorText = ""
-                        }) {
-                            Icon(Icons.Default.Add, contentDescription = "Add author")
-                        }
-                    }
-                    if (projectChips.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            projectChips.forEach { project ->
-                                InputChip(
-                                    selected = false,
-                                    onClick = {},
-                                    label = { Text(project) },
-                                    trailingIcon = {
-                                        IconButton(onClick = { projectChips = projectChips - project }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Remove")
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = newProjectText,
-                            onValueChange = { newProjectText = it },
-                            label = { Text("Add project") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = {
-                            val trimmed = newProjectText.trim()
-                            if (trimmed.isNotEmpty() && trimmed !in projectChips) {
-                                projectChips = projectChips + trimmed
-                            }
-                            newProjectText = ""
-                        }) {
-                            Icon(Icons.Default.Add, contentDescription = "Add project")
-                        }
-                    }
-                }
+        EditMetadataDialog(
+            title = pdf.title,
+            authors = pdf.authors,
+            createdAt = pdf.createdAt,
+            fileUri = pdf.uri,
+            rootUri = rootUri,
+            onSave = { newTitle, newAuthors ->
+                onPdfMetadataUpdate(pdf, newTitle, newAuthors, pdf.projects)
+                editTarget = null
             },
-            confirmButton = {
-                TextButton(onClick = { onPdfMetadataUpdate(pdf, title, authorChips, projectChips); editTarget = null }) {
-                    Text("Save")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { editTarget = null }) { Text("Cancel") }
-            }
+            onDismiss = { editTarget = null }
         )
     }
 
