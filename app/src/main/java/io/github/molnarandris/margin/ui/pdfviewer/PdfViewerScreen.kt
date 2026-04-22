@@ -621,6 +621,7 @@ fun PdfViewerScreen(
                 canRedo = canRedo,
                 penThickness = penThickness,
                 penColor = penColor,
+                isExternalPdf = isExternalPdf,
                 onBack = onBack,
                 onOpenPdf = onOpenPdf,
                 onSearchQueryChange = { searchQuery = it },

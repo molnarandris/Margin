@@ -62,6 +62,7 @@ fun PdfViewerTopBar(
     canRedo: Boolean,
     penThickness: StrokeThickness,
     penColor: StrokeColor,
+    isExternalPdf: Boolean,
     onBack: () -> Unit,
     onOpenPdf: (Uri, String) -> Unit,
     onSearchQueryChange: (String) -> Unit,
@@ -98,7 +99,7 @@ fun PdfViewerTopBar(
                     Column(
                         verticalArrangement = Arrangement.spacedBy(0.dp),
                         modifier = Modifier.weight(1f, fill = false).pointerInput(Unit) {
-                            detectTapGestures(onLongPress = { onEditMetadata() })
+                            detectTapGestures(onLongPress = { if (!isExternalPdf) onEditMetadata() })
                         }
                     ) {
                         Text(
@@ -153,31 +154,33 @@ fun PdfViewerTopBar(
                     Icon(Icons.Default.Close, contentDescription = "Close search")
                 }
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(-8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onUndo, enabled = canUndo) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                if (!isExternalPdf) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(-8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onUndo, enabled = canUndo) {
+                            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                        }
+                        IconButton(onClick = onRedo, enabled = canRedo) {
+                            Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                        }
                     }
-                    IconButton(onClick = onRedo, enabled = canRedo) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                    Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                    IconButton(onClick = onInsertPhoto) {
+                        Icon(Icons.Default.PhotoCamera, contentDescription = "Insert photo")
                     }
-                }
-                Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                IconButton(onClick = onInsertPhoto) {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = "Insert photo")
-                }
-                Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    StrokeThickness.entries.forEach { t ->
-                        ThicknessButton(t, t == penThickness) { onPenThicknessChange(t) }
+                    Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        StrokeThickness.entries.forEach { t ->
+                            ThicknessButton(t, t == penThickness) { onPenThicknessChange(t) }
+                        }
                     }
-                }
-                Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                Row(horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
-                    StrokeColor.entries.forEach { c ->
-                        ColorButton(c, c == penColor) { onPenColorChange(c) }
+                    Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                    Row(horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
+                        StrokeColor.entries.forEach { c ->
+                            ColorButton(c, c == penColor) { onPenColorChange(c) }
+                        }
                     }
+                    Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 }
-                Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 IconButton(onClick = onOpenSearch) {
                     Icon(Icons.Default.Search, contentDescription = "Search")
                 }

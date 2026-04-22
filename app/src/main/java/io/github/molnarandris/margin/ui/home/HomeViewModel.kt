@@ -143,7 +143,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
             val success = pdfRepo.importPdf(sourceUri, state.rootUri, emptyList())
-            if (success) {
+            if (success != null) {
                 val allItems = pdfRepo.getAllPdfs()
                     .map { FileSystemItem.PdfItem(it) }
                     .applySortOrder(_sortOrder.value)

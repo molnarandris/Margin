@@ -311,7 +311,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun launchSave(block: suspend CoroutineScope.() -> Unit): Job =
-        saveScope.launch { block() }
+        saveScope.launch {
+            if (_isExternalPdf.value) return@launch
+            block()
+        }
 
     // Pending ink strokes awaiting a batched save (main-thread access only)
     private val pendingInkStrokes = mutableMapOf<Int, MutableList<InkStroke>>() // pageIndex → strokes
@@ -399,10 +402,14 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 _importMessage.value = "No library configured. Set a library folder in Settings."
                 return@launch
             }
-            val success = pdfRepository.importPdf(externalUri, Uri.parse(rootUriString), emptyList())
-            if (success) {
+            val rootUri = Uri.parse(rootUriString)
+            val newUri = pdfRepository.importPdf(externalUri, rootUri, emptyList())
+            if (newUri != null) {
+                val docId = DocumentsContract.getDocumentId(newUri)
                 _isImported.value = true
                 _importMessage.value = "Imported to library"
+                _isExternalPdf.value = false
+                loadPdf(rootUri, docId)
             } else {
                 _importMessage.value = "Import failed"
             }

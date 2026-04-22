@@ -290,11 +290,11 @@ class PdfRepository(private val context: Context) {
         }
     }
 
-    suspend fun importPdf(sourceUri: Uri, rootUri: Uri, pathFromRoot: List<String>): Boolean = withContext(Dispatchers.IO) {
+    suspend fun importPdf(sourceUri: Uri, rootUri: Uri, pathFromRoot: List<String>): Uri? = withContext(Dispatchers.IO) {
         try {
-            val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext false
+            val dir = navigateToDir(rootUri, pathFromRoot) ?: return@withContext null
             val name = resolveFileName(sourceUri)
-            val destFile = dir.createFile("application/pdf", name) ?: return@withContext false
+            val destFile = dir.createFile("application/pdf", name) ?: return@withContext null
             context.contentResolver.openInputStream(sourceUri)?.use { input ->
                 context.contentResolver.openOutputStream(destFile.uri)?.use { output ->
                     input.copyTo(output)
@@ -317,9 +317,9 @@ class PdfRepository(private val context: Context) {
                 ScanMeta("", emptyList(), PdfType.DOCUMENT, emptyList(), 0L)
             }
             dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, scanned.title, scanned.authors.joinToString(";"), lastModified, scanned.type, scanned.projects.joinToString(","), createdAt = scanned.createdAt))
-            true
+            destFile.uri
         } catch (e: Exception) {
-            false
+            null
         }
     }
 
