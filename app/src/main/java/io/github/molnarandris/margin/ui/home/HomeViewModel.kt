@@ -41,7 +41,8 @@ private fun List<FileSystemItem>.applySearch(query: String): List<FileSystemItem
     return filterIsInstance<FileSystemItem.PdfItem>().filter { item ->
         item.pdf.name.lowercase().contains(q) ||
         item.pdf.title.lowercase().contains(q) ||
-        item.pdf.authors.any { it.lowercase().contains(q) }
+        item.pdf.authors.any { it.lowercase().contains(q) } ||
+        item.pdf.people.any { it.lowercase().contains(q) }
     }
 }
 

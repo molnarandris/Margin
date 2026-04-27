@@ -79,6 +79,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -291,6 +296,7 @@ fun HomeScreen(
                         ContentList(
                             items = state.items,
                             rootUri = state.rootUri,
+                            searchQuery = searchQuery,
                             listState = listState,
                             onPdfClick = { pdf ->
                                 scope.launch {
@@ -394,11 +400,28 @@ private fun TypeFilterToggle(
     }
 }
 
+private fun highlightMatches(text: String, query: String, highlightColor: Color): AnnotatedString {
+    if (query.isBlank()) return AnnotatedString(text)
+    return buildAnnotatedString {
+        val lower = text.lowercase()
+        val q = query.lowercase()
+        var start = 0
+        while (true) {
+            val idx = lower.indexOf(q, start)
+            if (idx == -1) { append(text.substring(start)); break }
+            append(text.substring(start, idx))
+            withStyle(SpanStyle(background = highlightColor)) { append(text.substring(idx, idx + q.length)) }
+            start = idx + q.length
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ContentList(
     items: List<FileSystemItem>,
     rootUri: Uri,
+    searchQuery: String = "",
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
     onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>, List<String>) -> Unit,
@@ -453,22 +476,32 @@ private fun ContentList(
             val authorsText = pdf.authors.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
             val filename = relativePath(pdf.uri, rootUri)
             val icon = if (pdf.type == PdfType.NOTE) Icons.Default.Description else Icons.Default.PictureAsPdf
+            val q = searchQuery.trim().lowercase()
+            val matchedPeople = if (q.isNotBlank()) pdf.people.filter { it.lowercase().contains(q) } else emptyList()
+            val highlightColor = MaterialTheme.colorScheme.primaryContainer
             Box {
                 ListItem(
                     leadingContent = {
                         Icon(imageVector = icon, contentDescription = null)
                     },
-                    headlineContent = { Text(title) },
+                    headlineContent = { Text(highlightMatches(title, q, highlightColor)) },
                     supportingContent = {
                         Column {
                             if (authorsText != null) {
                                 Text(
-                                    text = authorsText,
+                                    text = highlightMatches(authorsText, q, highlightColor),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (matchedPeople.isNotEmpty()) {
+                                val peopleText = "People: " + matchedPeople.joinToString(" • ")
+                                Text(
+                                    text = highlightMatches(peopleText, q, highlightColor),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
                             Text(
-                                text = filename,
+                                text = highlightMatches(filename, q, highlightColor),
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = androidx.compose.ui.text.font.FontWeight.Light
                                 ),
