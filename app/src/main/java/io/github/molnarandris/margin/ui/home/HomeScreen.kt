@@ -72,6 +72,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.Alignment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -100,7 +102,12 @@ fun HomeScreen(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     var isSearchActive by remember { mutableStateOf(searchQuery.isNotBlank()) }
+    val searchFocusRequester = remember { FocusRequester() }
     var fileNotFoundPdf by remember { mutableStateOf<PdfFile?>(null) }
+
+    LaunchedEffect(isSearchActive) {
+        if (isSearchActive) searchFocusRequester.requestFocus()
+    }
 
     fileNotFoundPdf?.let { pdf ->
         AlertDialog(
@@ -157,7 +164,7 @@ fun HomeScreen(
                             onValueChange = { viewModel.setSearchQuery(it) },
                             placeholder = { Text("Search title, author, filename…") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().focusRequester(searchFocusRequester)
                         )
                     },
                     actions = {
