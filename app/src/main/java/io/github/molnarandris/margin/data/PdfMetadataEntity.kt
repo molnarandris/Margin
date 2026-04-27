@@ -15,5 +15,6 @@ data class PdfMetadataEntity(
     val type: PdfType = PdfType.DOCUMENT,
     val projects: String = "",
     val lastOpened: Long = 0L,
-    val createdAt: Long = 0L
+    val createdAt: Long = 0L,
+    val people: String = ""
 )

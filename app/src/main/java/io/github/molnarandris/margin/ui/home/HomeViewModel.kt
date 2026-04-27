@@ -166,12 +166,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateMetadata(pdf: PdfFile, title: String, authors: List<String>, projects: List<String>) {
+    fun updateMetadata(pdf: PdfFile, title: String, authors: List<String>, projects: List<String>, people: List<String>) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val updated = pdfRepo.updateMetadata(pdf.uri, title, authors, projects)
+            val updated = pdfRepo.updateMetadata(pdf.uri, title, authors, projects, people)
             if (updated) {
-                val newPdf = pdf.copy(title = title, authors = authors, projects = projects, lastOpened = System.currentTimeMillis())
+                val newPdf = pdf.copy(title = title, authors = authors, projects = projects, people = people, lastOpened = System.currentTimeMillis())
                 val newItem = FileSystemItem.PdfItem(newPdf)
                 val allItems = state.allItems.map {
                     if (it is FileSystemItem.PdfItem && it.pdf.uri == pdf.uri) newItem else it

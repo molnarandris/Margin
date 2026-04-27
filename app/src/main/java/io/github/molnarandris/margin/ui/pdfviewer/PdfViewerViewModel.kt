@@ -97,7 +97,7 @@ data class PdfPage(
 
 sealed class PdfViewerUiState {
     object Loading : PdfViewerUiState()
-    data class Ready(val pages: List<PdfPage>, val title: String = "", val authors: List<String> = emptyList(), val projects: List<String> = emptyList()) : PdfViewerUiState()
+    data class Ready(val pages: List<PdfPage>, val title: String = "", val authors: List<String> = emptyList(), val projects: List<String> = emptyList(), val people: List<String> = emptyList()) : PdfViewerUiState()
     data class Error(val message: String) : PdfViewerUiState()
     data class CorruptedWithBackup(val backupFile: File, val uri: Uri) : PdfViewerUiState()
 }
@@ -115,6 +115,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _displayProjects = MutableStateFlow<List<String>>(emptyList())
     val displayProjects: StateFlow<List<String>> = _displayProjects.asStateFlow()
+
+    private val _displayPeople = MutableStateFlow<List<String>>(emptyList())
+    val displayPeople: StateFlow<List<String>> = _displayPeople.asStateFlow()
 
     private val _displayCreatedAt = MutableStateFlow(0L)
     val displayCreatedAt: StateFlow<Long> = _displayCreatedAt.asStateFlow()
@@ -244,7 +247,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         setHighlightNote(it, action.oldNote ?: "")
                     }
                 is UndoableAction.MetadataChanged ->
-                    setMetadata(action.oldTitle, action.oldAuthors, action.oldProjects)
+                    setMetadata(action.oldTitle, action.oldAuthors, action.oldProjects, action.oldPeople)
                 is UndoableAction.StrokesMoved ->
                     moveInkStrokes(action.pageIndex, action.movedStrokes, action.originalStrokes)
                 is UndoableAction.ImageAnnotationAdded ->
@@ -285,7 +288,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         setHighlightNote(it, action.newNote ?: "")
                     }
                 is UndoableAction.MetadataChanged ->
-                    setMetadata(action.newTitle, action.newAuthors, action.newProjects)
+                    setMetadata(action.newTitle, action.newAuthors, action.newProjects, action.newPeople)
                 is UndoableAction.StrokesMoved ->
                     moveInkStrokes(action.pageIndex, action.originalStrokes, action.movedStrokes)
                 is UndoableAction.ImageAnnotationAdded ->
@@ -1103,11 +1106,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
                     ?: emptyList()
                 val projects = PdfRepository.readProjectsFromXmp(pdDoc)
+                val people   = PdfRepository.readPeopleFromXmp(pdDoc)
                 val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthors.value = authors
                     _displayProjects.value = projects
+                    _displayPeople.value = people
                     _displayCreatedAt.value = createdAt
                 }
 
@@ -1149,7 +1154,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects)
+                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects, people)
                     if (initialPage > 0) _pendingScrollToPage.value = initialPage
                 }
 
@@ -1215,7 +1220,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     page.copy(highlights = allHighlights[i])
                 }
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects)
+                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects, people)
                 }
 
                 // Extract ink strokes from saved annotations and populate overlay
@@ -1286,11 +1291,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
                     ?: emptyList()
                 val projects = PdfRepository.readProjectsFromXmp(pdDoc)
+                val people   = PdfRepository.readPeopleFromXmp(pdDoc)
                 val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthors.value = authors
                     _displayProjects.value = projects
+                    _displayPeople.value = people
                     _displayCreatedAt.value = createdAt
                 }
 
@@ -1329,7 +1336,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
 
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects)
+                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects, people)
                     if (initialPage > 0) _pendingScrollToPage.value = initialPage
                 }
 
@@ -1392,7 +1399,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     page.copy(highlights = allHighlights[i])
                 }
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects)
+                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects, people)
                 }
 
                 val allInkStrokes = (0 until pageCount).associate { i ->
@@ -1426,14 +1433,16 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-    fun setMetadata(newTitle: String, newAuthors: List<String>, newProjects: List<String>) {
+    fun setMetadata(newTitle: String, newAuthors: List<String>, newProjects: List<String>, newPeople: List<String>) {
         pushUndo(UndoableAction.MetadataChanged(
             oldTitle = _displayTitle.value,
             newTitle = newTitle,
             oldAuthors = _displayAuthors.value,
             newAuthors = newAuthors,
             oldProjects = _displayProjects.value,
-            newProjects = newProjects
+            newProjects = newProjects,
+            oldPeople = _displayPeople.value,
+            newPeople = newPeople
         ))
         flushPendingInkStrokes()
         launchSave {
@@ -1443,8 +1452,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
 
-                pdfEditor.setMetadataInDoc(uri, newTitle, newAuthors, newProjects)
-                pdfRepository.syncMetadataToDb(uri, newTitle, newAuthors, newProjects)
+                pdfEditor.setMetadataInDoc(uri, newTitle, newAuthors, newProjects, newPeople)
+                pdfRepository.syncMetadataToDb(uri, newTitle, newAuthors, newProjects, newPeople)
 
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd
@@ -1455,7 +1464,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 _displayTitle.value = newTitle
                 _displayAuthors.value = newAuthors
                 _displayProjects.value = newProjects
-                _uiState.value = state.copy(title = newTitle, authors = newAuthors, projects = newProjects)
+                _displayPeople.value = newPeople
+                _uiState.value = state.copy(title = newTitle, authors = newAuthors, projects = newProjects, people = newPeople)
             }
         }
     }

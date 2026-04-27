@@ -301,13 +301,14 @@ class PdfEditor(
     }
 
     /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
-    suspend fun setMetadataInDoc(uri: Uri, newTitle: String, newAuthors: List<String>, newProjects: List<String>) {
+    suspend fun setMetadataInDoc(uri: Uri, newTitle: String, newAuthors: List<String>, newProjects: List<String>, newPeople: List<String>) {
         val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
         val info = pdDoc.documentInformation
         info.title  = newTitle
         info.author = newAuthors.joinToString("; ").ifBlank { null }
         pdDoc.documentInformation = info
         PdfRepository.writeProjectsToXmp(pdDoc, newProjects)
+        PdfRepository.writePeopleToXmp(pdDoc, newPeople)
         pdfRepository.save(pdDoc, uri)
         pdDoc.close()
     }

@@ -295,8 +295,8 @@ fun HomeScreen(
                                 }
                             },
                             onPdfDelete = { viewModel.deleteItem(it.uri) },
-                            onPdfMetadataUpdate = { pdf, title, authors, projects ->
-                                viewModel.updateMetadata(pdf, title, authors, projects)
+                            onPdfMetadataUpdate = { pdf, title, authors, projects, people ->
+                                viewModel.updateMetadata(pdf, title, authors, projects, people)
                             }
                         )
                     }
@@ -394,7 +394,7 @@ private fun ContentList(
     rootUri: Uri,
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
-    onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>) -> Unit,
+    onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>, List<String>) -> Unit,
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
@@ -423,11 +423,12 @@ private fun ContentList(
         EditMetadataDialog(
             title = pdf.title,
             authors = pdf.authors,
+            people = pdf.people,
             createdAt = pdf.createdAt,
             fileUri = pdf.uri,
             rootUri = rootUri,
-            onSave = { newTitle, newAuthors ->
-                onPdfMetadataUpdate(pdf, newTitle, newAuthors, pdf.projects)
+            onSave = { newTitle, newAuthors, newPeople ->
+                onPdfMetadataUpdate(pdf, newTitle, newAuthors, pdf.projects, newPeople)
                 editTarget = null
             },
             onDismiss = { editTarget = null }

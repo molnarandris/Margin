@@ -33,15 +33,17 @@ import java.util.Calendar
 fun EditMetadataDialog(
     title: String,
     authors: List<String>,
+    people: List<String>,
     createdAt: Long,
     fileUri: Uri,
     rootUri: Uri?,
-    onSave: (title: String, authors: List<String>) -> Unit,
+    onSave: (title: String, authors: List<String>, people: List<String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
     var titleText by rememberSaveable(title) { mutableStateOf(title) }
     var authorText by rememberSaveable(authors) { mutableStateOf(authors.joinToString(", ")) }
+    var peopleText by rememberSaveable(people) { mutableStateOf(people.joinToString(", ")) }
     var fileSize by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(fileUri) {
@@ -91,6 +93,26 @@ fun EditMetadataDialog(
                     }
                 )
                 Spacer(Modifier.height(12.dp))
+                Text("People", style = labelStyle, color = labelColor)
+                Spacer(Modifier.height(2.dp))
+                BasicTextField(
+                    value = peopleText,
+                    onValueChange = { peopleText = it },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                    cursorBrush = cursorBrush,
+                    modifier = Modifier.fillMaxWidth(),
+                    decorationBox = { innerTextField ->
+                        if (peopleText.isEmpty()) {
+                            Text(
+                                "Separate with commas",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = labelColor
+                            )
+                        }
+                        innerTextField()
+                    }
+                )
+                Spacer(Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(8.dp))
                 InfoRow("Created", formatCreatedAt(createdAt))
@@ -101,7 +123,8 @@ fun EditMetadataDialog(
         confirmButton = {
             TextButton(onClick = {
                 val parsedAuthors = authorText.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                onSave(titleText.trim(), parsedAuthors)
+                val parsedPeople = peopleText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                onSave(titleText.trim(), parsedAuthors, parsedPeople)
             }) { Text("Save") }
         },
         dismissButton = {

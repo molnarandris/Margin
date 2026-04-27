@@ -167,6 +167,7 @@ fun PdfViewerScreen(
     val pdfTitle      by viewModel.displayTitle.collectAsState()
     val pdfAuthors    by viewModel.displayAuthors.collectAsState()
     val pdfProjects   by viewModel.displayProjects.collectAsState()
+    val pdfPeople     by viewModel.displayPeople.collectAsState()
     val pdfCreatedAt  by viewModel.displayCreatedAt.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
@@ -282,11 +283,12 @@ fun PdfViewerScreen(
             EditMetadataDialog(
                 title = pdfTitle,
                 authors = pdfAuthors,
+                people = pdfPeople,
                 createdAt = pdfCreatedAt,
                 fileUri = docUri,
                 rootUri = dirUri,
-                onSave = { newTitle, newAuthors ->
-                    viewModel.setMetadata(newTitle, newAuthors, pdfProjects)
+                onSave = { newTitle, newAuthors, newPeople ->
+                    viewModel.setMetadata(newTitle, newAuthors, pdfProjects, newPeople)
                     isEditDialogVisible = false
                 },
                 onDismiss = { isEditDialogVisible = false }
