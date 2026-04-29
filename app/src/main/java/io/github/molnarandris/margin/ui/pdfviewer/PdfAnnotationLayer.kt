@@ -56,6 +56,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 internal data class PageTextSelection(
     val pageIndex: Int,
@@ -138,6 +139,7 @@ internal fun PdfAnnotationLayer(
     val density = LocalDensity.current
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
     var currentInkStroke by remember { mutableStateOf<List<Offset>?>(null) }
+    var lassoProgress by remember { mutableStateOf<Float?>(null) }
     var lastDownWasStylus by remember { mutableStateOf(false) }
     var showPageContextMenu by remember { mutableStateOf(false) }
     var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
@@ -296,23 +298,39 @@ internal fun PdfAnnotationLayer(
                 currentInkStroke = listOf(down.position)
                 var lassoClosedAt: Long? = null
                 var triggerLasso = false
+                var lastEventPos = down.position
+                var lastEventTime = down.uptimeMillis
+                val recentSpeeds = ArrayDeque<Float>()
                 while (true) {
                     val event = awaitPointerEvent(PointerEventPass.Initial)
                     val change = event.changes.find { it.id == down.id } ?: break
                     if (!change.pressed) break
                     change.consume()
+                    // Rolling average speed (px/ms) over last 8 events to gate lasso detection
+                    val dt = (change.uptimeMillis - lastEventTime).coerceAtLeast(1L)
+                    val dPos = change.position - lastEventPos
+                    recentSpeeds.addLast(sqrt(dPos.x * dPos.x + dPos.y * dPos.y) / dt)
+                    if (recentSpeeds.size > 8) recentSpeeds.removeFirst()
+                    lastEventPos = change.position
+                    lastEventTime = change.uptimeMillis
                     points.add(change.position)
                     currentInkStroke = points.toList()
-                    if (isApproxClosed(points)) {
-                        if (lassoClosedAt == null) lassoClosedAt = System.currentTimeMillis()
-                        if (System.currentTimeMillis() - lassoClosedAt >= 600L) {
+                    val avgSpeed = recentSpeeds.average().toFloat()
+                    val now = System.currentTimeMillis()
+                    if (isApproxClosed(points) && avgSpeed < 0.5f) {
+                        if (lassoClosedAt == null) lassoClosedAt = now
+                        val elapsed = now - lassoClosedAt!!
+                        lassoProgress = (elapsed / 600f).coerceIn(0f, 1f)
+                        if (elapsed >= 600L) {
                             triggerLasso = true
                             break
                         }
                     } else {
                         lassoClosedAt = null
+                        lassoProgress = null
                     }
                 }
+                lassoProgress = null
                 if (triggerLasso) currentInkStroke = null  // Clear for lasso; ink path clears after async
 
                 if (triggerLasso && pageSize != IntSize.Zero) {
@@ -659,6 +677,7 @@ internal fun PdfAnnotationLayer(
             }
         }
         val inkStroke = currentInkStroke
+        val lasso = lassoProgress
         if (inkStroke != null && inkStroke.size >= 2) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val baseStrokePx = size.width / page.nativeWidth
@@ -666,9 +685,35 @@ internal fun PdfAnnotationLayer(
                 val w = baseStrokePx * state.penThickness.multiplier
                 if (inkStroke.first() == inkStroke.last()) {
                     drawCircle(c, radius = w / 2f, center = inkStroke.first())
+                } else if (lasso == null || lasso <= 0f) {
+                    drawPath(catmullRomPath(inkStroke), color = c,
+                        style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 } else {
-                    val path = catmullRomPath(inkStroke)
-                    drawPath(path, color = c, style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    // Find the control-point index at `lasso` fraction of the approximate arc length
+                    var totalLen = 0f
+                    for (i in 0 until inkStroke.size - 1) {
+                        val dx = inkStroke[i + 1].x - inkStroke[i].x
+                        val dy = inkStroke[i + 1].y - inkStroke[i].y
+                        totalLen += sqrt(dx * dx + dy * dy)
+                    }
+                    val target = lasso * totalLen
+                    var accum = 0f
+                    var splitIdx = inkStroke.size - 1
+                    for (i in 0 until inkStroke.size - 1) {
+                        val dx = inkStroke[i + 1].x - inkStroke[i].x
+                        val dy = inkStroke[i + 1].y - inkStroke[i].y
+                        accum += sqrt(dx * dx + dy * dy)
+                        if (accum >= target) { splitIdx = i + 1; break }
+                    }
+                    // Dashed portion: start → split point
+                    drawPath(catmullRomPath(inkStroke.subList(0, (splitIdx + 1).coerceAtMost(inkStroke.size))),
+                        color = c, style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f)))
+                    // Solid portion: split point → end
+                    if (splitIdx < inkStroke.size - 1) {
+                        drawPath(catmullRomPath(inkStroke.subList(splitIdx, inkStroke.size)),
+                            color = c, style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    }
                 }
             }
         }
