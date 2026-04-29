@@ -537,6 +537,43 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun deletePages(pageIndices: Set<Int>) {
+        val currentState = _uiState.value as? PdfViewerUiState.Ready ?: return
+        val sorted = pageIndices.filter { it in currentState.pages.indices }.sorted()
+        if (sorted.isEmpty()) return
+
+        pendingDeleteJob?.cancel()
+        pendingDeleteJob = null
+        deletedPageSnapshot = null
+
+        flushPendingInkStrokes()
+
+        val removedSet = sorted.toSet()
+        val newPages = currentState.pages.filterIndexed { idx, _ -> idx !in removedSet }
+        _uiState.value = currentState.copy(pages = newPages)
+        _completedInkStrokes.update { map ->
+            buildMap {
+                map.forEach { (idx, strokes) ->
+                    if (idx !in removedSet)
+                        put(idx - sorted.count { it < idx }, strokes)
+                }
+            }
+        }
+
+        saveScope.launch {
+            val uri = docUri ?: return@launch
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+                pdfEditor.deletePagesFromDoc(uri, sorted)
+                val newPfd = getApplication<Application>().contentResolver
+                    .openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                renderer = PdfRenderer(newPfd)
+            }
+        }
+    }
+
     fun cancelDelete() {
         pendingDeleteJob?.cancel()
         pendingDeleteJob = null

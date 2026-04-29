@@ -300,6 +300,15 @@ class PdfEditor(
         pdDoc.close()
     }
 
+    /** Must be called within renderMutex.withLock, with renderer/pfd already closed.
+     *  [pageIndices] must be in ascending sorted order. */
+    suspend fun deletePagesFromDoc(uri: Uri, pageIndices: List<Int>) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        pageIndices.sortedDescending().forEach { pdDoc.removePage(it) }
+        pdfRepository.save(pdDoc, uri)
+        pdDoc.close()
+    }
+
     /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
     suspend fun setMetadataInDoc(uri: Uri, newTitle: String, newAuthors: List<String>, newProjects: List<String>, newPeople: List<String>, newArxivId: String = "") {
         val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
