@@ -474,11 +474,15 @@ private fun ContentList(
         items(items, key = { item -> "pdf:${(item as FileSystemItem.PdfItem).pdf.uri}" }) { item ->
             val pdf = (item as FileSystemItem.PdfItem).pdf
             val title = pdf.title.takeIf { it.isNotBlank() } ?: relativePath(pdf.uri, rootUri)
-            val authorsText = pdf.authors.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
+            val authorsText = if (pdf.type == PdfType.NOTE) {
+                pdf.people.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
+            } else {
+                pdf.authors.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
+            }
             val filename = relativePath(pdf.uri, rootUri)
             val icon = if (pdf.type == PdfType.NOTE) Icons.Default.Description else Icons.Default.PictureAsPdf
             val q = searchQuery.trim().lowercase()
-            val matchedPeople = if (q.isNotBlank()) pdf.people.filter { it.lowercase().contains(q) } else emptyList()
+            val matchedPeople = if (q.isNotBlank() && pdf.type != PdfType.NOTE) pdf.people.filter { it.lowercase().contains(q) } else emptyList()
             val showArxiv = pdf.arxivId.isNotBlank() && (q.isBlank() || pdf.arxivId.lowercase().contains(q))
             val highlightColor = MaterialTheme.colorScheme.primaryContainer
             Box {

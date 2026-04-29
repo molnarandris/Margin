@@ -168,6 +168,7 @@ fun PdfViewerScreen(
     val pdfAuthors    by viewModel.displayAuthors.collectAsState()
     val pdfProjects   by viewModel.displayProjects.collectAsState()
     val pdfPeople     by viewModel.displayPeople.collectAsState()
+    val pdfIsNote     by viewModel.displayIsNote.collectAsState()
     val pdfArxivId    by viewModel.displayArxivId.collectAsState()
     val pdfCreatedAt  by viewModel.displayCreatedAt.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
@@ -621,6 +622,8 @@ fun PdfViewerScreen(
                 searchState = searchState,
                 pdfTitle = pdfTitle,
                 pdfAuthors = pdfAuthors,
+                pdfPeople = pdfPeople,
+                pdfIsNote = pdfIsNote,
                 previousDocParams = previousDocParams,
                 totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0,
                 currentPage = currentPage,

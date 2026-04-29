@@ -55,6 +55,8 @@ fun PdfViewerTopBar(
     searchState: SearchState,
     pdfTitle: String,
     pdfAuthors: List<String>,
+    pdfPeople: List<String>,
+    pdfIsNote: Boolean,
     previousDocParams: Pair<Uri, String>?,
     totalPages: Int,
     currentPage: Int,
@@ -110,10 +112,9 @@ fun PdfViewerTopBar(
                             overflow = TextOverflow.Ellipsis
                         )
                         val pageInfo = if (totalPages > 0) "${currentPage + 1} / $totalPages" else ""
-                        val subtitle = listOfNotNull(
-                            pdfAuthors.joinToString(", ").ifEmpty { null },
-                            pageInfo.ifEmpty { null }
-                        ).joinToString("  ·  ")
+                        val subtitleName = if (pdfIsNote) pdfPeople.joinToString(", ").ifEmpty { null }
+                                           else pdfAuthors.joinToString(", ").ifEmpty { null }
+                        val subtitle = listOfNotNull(subtitleName, pageInfo.ifEmpty { null }).joinToString("  ·  ")
                         if (subtitle.isNotEmpty()) {
                             Text(
                                 text = subtitle,

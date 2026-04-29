@@ -125,6 +125,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _displayCreatedAt = MutableStateFlow(0L)
     val displayCreatedAt: StateFlow<Long> = _displayCreatedAt.asStateFlow()
 
+    private val _displayIsNote = MutableStateFlow(false)
+    val displayIsNote: StateFlow<Boolean> = _displayIsNote.asStateFlow()
+
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
 
@@ -1149,6 +1152,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val people   = PdfRepository.readPeopleFromXmp(pdDoc)
                 val arxivId  = PdfRepository.readArxivFromXmp(pdDoc)
                 val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
+                val isNote   = pdDoc.documentInformation?.creator == "Margin"
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthors.value = authors
@@ -1156,6 +1160,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     _displayPeople.value = people
                     _displayArxivId.value = arxivId
                     _displayCreatedAt.value = createdAt
+                    _displayIsNote.value = isNote
                 }
 
                 // Extract outline (fast — just traverses bookmark tree)
@@ -1336,6 +1341,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val people   = PdfRepository.readPeopleFromXmp(pdDoc)
                 val arxivId  = PdfRepository.readArxivFromXmp(pdDoc)
                 val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
+                val isNote   = pdDoc.documentInformation?.creator == "Margin"
                 withContext(Dispatchers.Main) {
                     _displayTitle.value = title.ifBlank { fileName }
                     _displayAuthors.value = authors
@@ -1343,6 +1349,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     _displayPeople.value = people
                     _displayArxivId.value = arxivId
                     _displayCreatedAt.value = createdAt
+                    _displayIsNote.value = isNote
                 }
 
                 val outline = pdfEditor.extractOutline(pdDoc)
