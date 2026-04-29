@@ -191,6 +191,8 @@ fun PdfViewerScreen(
     }
 
     var topBarVisible by remember { mutableStateOf(true) }
+    var showPageOverview by remember { mutableStateOf(false) }
+    BackHandler(enabled = showPageOverview) { showPageOverview = false }
     val snackbarHostState = remember { SnackbarHostState() }
     val outerScope = rememberCoroutineScope()
     val view = LocalView.current
@@ -600,17 +602,18 @@ fun PdfViewerScreen(
             }
         },
         bottomBar = {
-            if (topBarVisible) {
+            if (topBarVisible && !showPageOverview) {
                 PdfViewerBottomBar(
                     breadcrumb = tocBreadcrumb,
                     currentPage = currentPage,
                     totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0,
                     outline = outline,
-                    onOpenOutline = { isOutlineVisible = true }
+                    onOpenOutline = { isOutlineVisible = true },
+                    onLongClickPageNumber = { showPageOverview = true }
                 )
             }
         },
-        topBar = { if (topBarVisible) {
+        topBar = { if (topBarVisible && !showPageOverview) {
             PdfViewerTopBar(
                 isSearchVisible = isSearchVisible,
                 searchQuery = searchQuery,
@@ -652,6 +655,7 @@ fun PdfViewerScreen(
             )
         } },
     ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize()) {
         when (val state = uiState) {
             is PdfViewerUiState.Loading -> {
                 Box(
@@ -1079,6 +1083,36 @@ fun PdfViewerScreen(
                 }
             }
         }
+
+        val readyState = uiState as? PdfViewerUiState.Ready
+        if (showPageOverview && readyState != null) {
+            PageOverviewScreen(
+                pages = readyState.pages,
+                inkStrokes = completedInkStrokes,
+                initialPage = currentPage,
+                onClose = { showPageOverview = false },
+                onNavigateToPage = { page ->
+                    currentPage = page
+                    showPageOverview = false
+                },
+                onDeletePages = { indicesToDelete ->
+                    val sorted = indicesToDelete.sorted()
+                    val newCount = readyState.pages.size - sorted.size
+                    currentPage = if (currentPage !in indicesToDelete) {
+                        currentPage - sorted.count { it < currentPage }
+                    } else {
+                        val firstAfter = (currentPage until readyState.pages.size)
+                            .firstOrNull { it !in indicesToDelete }
+                            ?: (currentPage downTo 0).firstOrNull { it !in indicesToDelete }
+                            ?: 0
+                        firstAfter - sorted.count { it < firstAfter }
+                    }.coerceIn(0, (newCount - 1).coerceAtLeast(0))
+                    viewModel.deletePages(indicesToDelete)
+                    showPageOverview = false
+                }
+            )
+        }
+        } // end Box
     }
 }
 
@@ -1254,7 +1288,8 @@ private fun PdfViewerBottomBar(
     currentPage: Int,
     totalPages: Int,
     outline: List<OutlineItem>,
-    onOpenOutline: () -> Unit
+    onOpenOutline: () -> Unit,
+    onLongClickPageNumber: () -> Unit
 ) {
     Row(
             modifier = Modifier
@@ -1281,10 +1316,18 @@ private fun PdfViewerBottomBar(
                     }
             )
             if (totalPages > 0) {
-                Text(
-                    text = "${currentPage + 1} / $totalPages",
-                    style = MaterialTheme.typography.labelSmall
-                )
+                Box(
+                    modifier = Modifier
+                        .pointerInput(Unit) {
+                            detectTapGestures(onLongPress = { onLongClickPageNumber() })
+                        }
+                        .padding(horizontal = 4.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "${currentPage + 1} / $totalPages",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
         }
 }
