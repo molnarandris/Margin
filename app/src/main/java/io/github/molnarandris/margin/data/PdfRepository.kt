@@ -51,7 +51,9 @@ class PdfRepository(private val context: Context) {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 backup.outputStream().use { input.copyTo(it) }
             }
-            doc.documentInformation.setModificationDate(Calendar.getInstance())
+            val rounded = roundToHalfHour(Calendar.getInstance())
+            doc.documentInformation.setModificationDate(rounded)
+            writeDatesToXmp(doc, createDate = null, modDate = rounded)
             context.contentResolver.openOutputStream(uri, "wt")!!.use { doc.save(it) }
             backup.delete()
         }
@@ -72,6 +74,83 @@ class PdfRepository(private val context: Context) {
         private const val MARGIN_NS = "http://github.com/molnarandris/margin/xmp/1.0/"
         private const val RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
         private const val DC_NS = "http://purl.org/dc/elements/1.1/"
+        private const val XMP_NS = "http://ns.adobe.com/xap/1.0/"
+
+        fun roundToHalfHour(cal: Calendar): Calendar = (cal.clone() as Calendar).also {
+            it.set(Calendar.MINUTE, if (it.get(Calendar.MINUTE) >= 30) 30 else 0)
+            it.set(Calendar.SECOND, 0)
+            it.set(Calendar.MILLISECOND, 0)
+        }
+
+        private fun calendarToXmpDate(cal: Calendar): String =
+            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US)
+                .also { it.timeZone = cal.timeZone }
+                .format(cal.time)
+
+        fun writeDatesToXmp(doc: PDDocument, createDate: Calendar?, modDate: Calendar?) {
+            if (createDate == null && modDate == null) return
+            val factory = DocumentBuilderFactory.newInstance().also { it.isNamespaceAware = true }
+            val builder = factory.newDocumentBuilder()
+            val existingStream = doc.documentCatalog.metadata
+            val parsed: org.w3c.dom.Document? = if (existingStream != null) {
+                try { builder.parse(existingStream.exportXMPMetadata()) } catch (e: Exception) { null }
+            } else null
+            val xmpDoc: org.w3c.dom.Document = parsed ?: run {
+                val d = builder.newDocument()
+                val xmpmeta = d.createElementNS("adobe:ns:meta/", "x:xmpmeta")
+                xmpmeta.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "adobe:ns:meta/")
+                d.appendChild(xmpmeta)
+                val rdf = d.createElementNS(RDF_NS, "rdf:RDF")
+                rdf.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:rdf", RDF_NS)
+                xmpmeta.appendChild(rdf)
+                d
+            }
+
+            if (createDate != null) {
+                val existing = xmpDoc.getElementsByTagNameNS(XMP_NS, "CreateDate")
+                repeat(existing.length) { existing.item(0).parentNode.removeChild(existing.item(0)) }
+            }
+            if (modDate != null) {
+                val existing = xmpDoc.getElementsByTagNameNS(XMP_NS, "ModifyDate")
+                repeat(existing.length) { existing.item(0).parentNode.removeChild(existing.item(0)) }
+            }
+
+            val rdfNodes = xmpDoc.getElementsByTagNameNS(RDF_NS, "RDF")
+            val rdf: Element = if (rdfNodes.length > 0) rdfNodes.item(0) as Element else {
+                val r = xmpDoc.createElementNS(RDF_NS, "rdf:RDF")
+                r.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:rdf", RDF_NS)
+                xmpDoc.documentElement.appendChild(r)
+                r
+            }
+            var desc: Element? = null
+            val descs = xmpDoc.getElementsByTagNameNS(RDF_NS, "Description")
+            for (i in 0 until descs.length) {
+                val d = descs.item(i) as Element
+                if (d.getAttribute("xmlns:xmp") == XMP_NS) { desc = d; break }
+            }
+            if (desc == null) {
+                desc = xmpDoc.createElementNS(RDF_NS, "rdf:Description")
+                desc.setAttributeNS(RDF_NS, "rdf:about", "")
+                desc.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:xmp", XMP_NS)
+                rdf.appendChild(desc)
+            }
+            if (createDate != null) {
+                val el = xmpDoc.createElementNS(XMP_NS, "xmp:CreateDate")
+                el.textContent = calendarToXmpDate(createDate)
+                desc.appendChild(el)
+            }
+            if (modDate != null) {
+                val el = xmpDoc.createElementNS(XMP_NS, "xmp:ModifyDate")
+                el.textContent = calendarToXmpDate(modDate)
+                desc.appendChild(el)
+            }
+
+            val bytes = ByteArrayOutputStream().also { out ->
+                TransformerFactory.newInstance().newTransformer()
+                    .transform(DOMSource(xmpDoc), StreamResult(out))
+            }.toByteArray()
+            doc.documentCatalog.metadata = PDMetadata(doc, ByteArrayInputStream(bytes))
+        }
 
         fun readProjectsFromXmp(doc: PDDocument): List<String> {
             val metaStream = doc.documentCatalog.metadata ?: return emptyList()
@@ -330,7 +409,7 @@ class PdfRepository(private val context: Context) {
                     val uriStr = file.uri.toString()
                     val lastModified = file.lastModified()
                     val cached = dao.getByUri(uriStr)
-                    val meta = if (cached != null && cached.lastModified == lastModified) {
+                    val meta = if (cached != null && cached.lastModified == lastModified && cached.createdAt != 0L) {
                         ScanMeta(cached.title, cached.author.split(";").map { it.trim() }.filter { it.isNotBlank() }, cached.type, cached.projects.split(",").filter { it.isNotBlank() }, cached.createdAt, cached.people.split(",").filter { it.isNotBlank() }, cached.arxivId)
                     } else {
                         val scanned = try {
@@ -390,7 +469,7 @@ class PdfRepository(private val context: Context) {
             val name = file.name ?: "Untitled.pdf"
             val lastModified = file.lastModified()
             val cached = dao.getByUri(uriStr)
-            if (cached != null && cached.lastModified == lastModified) continue
+            if (cached != null && cached.lastModified == lastModified && cached.createdAt != 0L) continue
             val scanned = try {
                 context.contentResolver.openInputStream(file.uri)?.use { stream ->
                     val doc = PDDocument.load(stream)
@@ -537,20 +616,26 @@ class PdfRepository(private val context: Context) {
             val dayName = now.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
             val title = "Note on $dayName $yyyy.$mm.$dd at $hh:$roundedMin"
             val authorString = prefsRepo.userName.first().trim()
+            val cal = Calendar.getInstance().also {
+                it.set(now.year, now.monthValue - 1, now.dayOfMonth, now.hour,
+                       if (now.minute >= 30) 30 else 0, 0)
+                it.set(Calendar.MILLISECOND, 0)
+            }
             val doc = PDDocument()
             val info = doc.documentInformation
             info.creator = "Margin"
             info.title = title
             if (authorString.isNotEmpty()) info.author = authorString
-            info.setCreationDate(Calendar.getInstance())
+            info.setCreationDate(cal)
             doc.documentInformation = info
+            writeDatesToXmp(doc, createDate = cal, modDate = null)
             val page = PDPage(PDRectangle.A4)
             page.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
             doc.addPage(page)
             context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
             doc.close()
             val lastModified = destFile.lastModified()
-            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, title, authorString, lastModified, PdfType.NOTE))
+            dao.upsert(PdfMetadataEntity(destFile.uri.toString(), name, title, authorString, lastModified, PdfType.NOTE, createdAt = cal.timeInMillis))
             destFile.uri
         } catch (e: Exception) {
             null

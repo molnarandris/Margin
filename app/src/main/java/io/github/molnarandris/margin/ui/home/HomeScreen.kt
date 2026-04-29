@@ -400,6 +400,27 @@ private fun TypeFilterToggle(
     }
 }
 
+private fun isDefaultNoteTitle(title: String) =
+    title.matches(Regex("Note on .+ \\d{4}\\.\\d{2}\\.\\d{2} at \\d{2}:(00|30)"))
+
+private fun formatNoteCreationDate(millis: Long): String? {
+    if (millis == 0L) return null
+    val cal = java.util.Calendar.getInstance().also {
+        it.timeInMillis = millis
+        it.set(java.util.Calendar.MINUTE, if (it.get(java.util.Calendar.MINUTE) >= 30) 30 else 0)
+        it.set(java.util.Calendar.SECOND, 0)
+        it.set(java.util.Calendar.MILLISECOND, 0)
+    }
+    val day = cal.getDisplayName(java.util.Calendar.DAY_OF_WEEK, java.util.Calendar.LONG, java.util.Locale.getDefault())
+    return "$day %04d.%02d.%02d at %02d:%02d".format(
+        cal.get(java.util.Calendar.YEAR),
+        cal.get(java.util.Calendar.MONTH) + 1,
+        cal.get(java.util.Calendar.DAY_OF_MONTH),
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE)
+    )
+}
+
 private fun highlightMatches(text: String, query: String, highlightColor: Color): AnnotatedString {
     if (query.isBlank()) return AnnotatedString(text)
     return buildAnnotatedString {
@@ -484,6 +505,9 @@ private fun ContentList(
             val q = searchQuery.trim().lowercase()
             val matchedPeople = if (q.isNotBlank() && pdf.type != PdfType.NOTE) pdf.people.filter { it.lowercase().contains(q) } else emptyList()
             val showArxiv = pdf.arxivId.isNotBlank() && (q.isBlank() || pdf.arxivId.lowercase().contains(q))
+            val createdAtText = if (pdf.type == PdfType.NOTE && pdf.createdAt != 0L
+                && !isDefaultNoteTitle(pdf.title.takeIf { it.isNotBlank() } ?: ""))
+                formatNoteCreationDate(pdf.createdAt) else null
             val highlightColor = MaterialTheme.colorScheme.primaryContainer
             Box {
                 ListItem(
@@ -496,6 +520,12 @@ private fun ContentList(
                             if (authorsText != null) {
                                 Text(
                                     text = highlightMatches(authorsText, q, highlightColor),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (createdAtText != null) {
+                                Text(
+                                    text = createdAtText,
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
