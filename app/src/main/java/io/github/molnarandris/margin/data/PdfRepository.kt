@@ -534,7 +534,8 @@ class PdfRepository(private val context: Context) {
             val yyyy = "%04d".format(now.year)
             val dir = navigateToDirOrCreate(rootUri, listOf("Notes", yyyy, mm)) ?: return@withContext null
             val destFile = dir.createFile("application/pdf", name) ?: return@withContext null
-            val title = "Note on $yyyy.$mm.$dd at $hh:$roundedMin"
+            val dayName = now.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault())
+            val title = "Note on $dayName $yyyy.$mm.$dd at $hh:$roundedMin"
             val authorString = prefsRepo.userName.first().trim()
             val doc = PDDocument()
             val info = doc.documentInformation
