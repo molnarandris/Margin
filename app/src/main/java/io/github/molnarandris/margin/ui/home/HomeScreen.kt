@@ -308,8 +308,8 @@ fun HomeScreen(
                                 }
                             },
                             onPdfDelete = { viewModel.deleteItem(it.uri) },
-                            onPdfMetadataUpdate = { pdf, title, authors, projects, people ->
-                                viewModel.updateMetadata(pdf, title, authors, projects, people)
+                            onPdfMetadataUpdate = { pdf, title, authors, projects, people, arxivId ->
+                                viewModel.updateMetadata(pdf, title, authors, projects, people, arxivId)
                             }
                         )
                     }
@@ -424,7 +424,7 @@ private fun ContentList(
     searchQuery: String = "",
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
-    onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>, List<String>) -> Unit,
+    onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>, List<String>, String) -> Unit,
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
@@ -454,11 +454,12 @@ private fun ContentList(
             title = pdf.title,
             authors = pdf.authors,
             people = pdf.people,
+            arxivId = pdf.arxivId,
             createdAt = pdf.createdAt,
             fileUri = pdf.uri,
             rootUri = rootUri,
-            onSave = { newTitle, newAuthors, newPeople ->
-                onPdfMetadataUpdate(pdf, newTitle, newAuthors, pdf.projects, newPeople)
+            onSave = { newTitle, newAuthors, newPeople, newArxivId ->
+                onPdfMetadataUpdate(pdf, newTitle, newAuthors, pdf.projects, newPeople, newArxivId)
                 editTarget = null
             },
             onDismiss = { editTarget = null }
@@ -478,6 +479,7 @@ private fun ContentList(
             val icon = if (pdf.type == PdfType.NOTE) Icons.Default.Description else Icons.Default.PictureAsPdf
             val q = searchQuery.trim().lowercase()
             val matchedPeople = if (q.isNotBlank()) pdf.people.filter { it.lowercase().contains(q) } else emptyList()
+            val showArxiv = pdf.arxivId.isNotBlank() && (q.isBlank() || pdf.arxivId.lowercase().contains(q))
             val highlightColor = MaterialTheme.colorScheme.primaryContainer
             Box {
                 ListItem(
@@ -497,6 +499,12 @@ private fun ContentList(
                                 val peopleText = "People: " + matchedPeople.joinToString(" • ")
                                 Text(
                                     text = highlightMatches(peopleText, q, highlightColor),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (showArxiv) {
+                                Text(
+                                    text = highlightMatches("arXiv: ${pdf.arxivId}", q, highlightColor),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }

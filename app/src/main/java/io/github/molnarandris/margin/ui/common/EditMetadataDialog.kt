@@ -34,16 +34,18 @@ fun EditMetadataDialog(
     title: String,
     authors: List<String>,
     people: List<String>,
+    arxivId: String = "",
     createdAt: Long,
     fileUri: Uri,
     rootUri: Uri?,
-    onSave: (title: String, authors: List<String>, people: List<String>) -> Unit,
+    onSave: (title: String, authors: List<String>, people: List<String>, arxivId: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
     var titleText by rememberSaveable(title) { mutableStateOf(title) }
     var authorText by rememberSaveable(authors) { mutableStateOf(authors.joinToString(", ")) }
     var peopleText by rememberSaveable(people) { mutableStateOf(people.joinToString(", ")) }
+    var arxivText by rememberSaveable(arxivId) { mutableStateOf(arxivId) }
     var fileSize by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(fileUri) {
@@ -113,6 +115,26 @@ fun EditMetadataDialog(
                     }
                 )
                 Spacer(Modifier.height(12.dp))
+                Text("arXiv ID", style = labelStyle, color = labelColor)
+                Spacer(Modifier.height(2.dp))
+                BasicTextField(
+                    value = arxivText,
+                    onValueChange = { arxivText = it },
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                    cursorBrush = cursorBrush,
+                    modifier = Modifier.fillMaxWidth(),
+                    decorationBox = { innerTextField ->
+                        if (arxivText.isEmpty()) {
+                            Text(
+                                "e.g. 2301.12345",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = labelColor
+                            )
+                        }
+                        innerTextField()
+                    }
+                )
+                Spacer(Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(8.dp))
                 InfoRow("Created", formatCreatedAt(createdAt))
@@ -124,7 +146,7 @@ fun EditMetadataDialog(
             TextButton(onClick = {
                 val parsedAuthors = authorText.split(",").map { it.trim() }.filter { it.isNotBlank() }
                 val parsedPeople = peopleText.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                onSave(titleText.trim(), parsedAuthors, parsedPeople)
+                onSave(titleText.trim(), parsedAuthors, parsedPeople, arxivText.trim())
             }) { Text("Save") }
         },
         dismissButton = {

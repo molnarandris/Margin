@@ -10,7 +10,7 @@ sealed class UndoableAction {
     data class HighlightAdded(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
     data class HighlightDeleted(val pageIndex: Int, val bounds: List<RectF>, val note: String?) : UndoableAction()
     data class AnnotationEdited(val pageIndex: Int, val bounds: List<RectF>, val oldNote: String?, val newNote: String?) : UndoableAction()
-    data class MetadataChanged(val oldTitle: String, val newTitle: String, val oldAuthors: List<String>, val newAuthors: List<String>, val oldProjects: List<String>, val newProjects: List<String>, val oldPeople: List<String>, val newPeople: List<String>) : UndoableAction()
+    data class MetadataChanged(val oldTitle: String, val newTitle: String, val oldAuthors: List<String>, val newAuthors: List<String>, val oldProjects: List<String>, val newProjects: List<String>, val oldPeople: List<String>, val newPeople: List<String>, val oldArxivId: String = "", val newArxivId: String = "") : UndoableAction()
     data class StrokesMoved(val pageIndex: Int, val originalStrokes: List<InkStroke>, val movedStrokes: List<InkStroke>) : UndoableAction()
     data class ImageAnnotationAdded(val pageIndex: Int, val annotation: PdfImageAnnotation) : UndoableAction()
     data class ImageAnnotationDeleted(val pageIndex: Int, val annotation: PdfImageAnnotation) : UndoableAction()

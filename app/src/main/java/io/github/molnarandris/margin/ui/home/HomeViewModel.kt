@@ -42,7 +42,8 @@ private fun List<FileSystemItem>.applySearch(query: String): List<FileSystemItem
         item.pdf.name.lowercase().contains(q) ||
         item.pdf.title.lowercase().contains(q) ||
         item.pdf.authors.any { it.lowercase().contains(q) } ||
-        item.pdf.people.any { it.lowercase().contains(q) }
+        item.pdf.people.any { it.lowercase().contains(q) } ||
+        item.pdf.arxivId.lowercase().contains(q)
     }
 }
 
@@ -167,12 +168,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateMetadata(pdf: PdfFile, title: String, authors: List<String>, projects: List<String>, people: List<String>) {
+    fun updateMetadata(pdf: PdfFile, title: String, authors: List<String>, projects: List<String>, people: List<String>, arxivId: String = "") {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {
-            val updated = pdfRepo.updateMetadata(pdf.uri, title, authors, projects, people)
+            val updated = pdfRepo.updateMetadata(pdf.uri, title, authors, projects, people, arxivId)
             if (updated) {
-                val newPdf = pdf.copy(title = title, authors = authors, projects = projects, people = people, lastOpened = System.currentTimeMillis())
+                val newPdf = pdf.copy(title = title, authors = authors, projects = projects, people = people, arxivId = arxivId, lastOpened = System.currentTimeMillis())
                 val newItem = FileSystemItem.PdfItem(newPdf)
                 val allItems = state.allItems.map {
                     if (it is FileSystemItem.PdfItem && it.pdf.uri == pdf.uri) newItem else it

@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [PdfMetadataEntity::class], version = 6)
+@Database(entities = [PdfMetadataEntity::class], version = 7)
 abstract class PdfDatabase : RoomDatabase() {
     abstract fun pdfMetadataDao(): PdfMetadataDao
 
@@ -44,13 +44,19 @@ abstract class PdfDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE pdf_metadata ADD COLUMN arxivId TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): PdfDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     PdfDatabase::class.java,
                     "pdf_metadata.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { INSTANCE = it }
             }
     }
 }
