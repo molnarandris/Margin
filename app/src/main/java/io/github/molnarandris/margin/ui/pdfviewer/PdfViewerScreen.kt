@@ -1014,6 +1014,17 @@ fun PdfViewerScreen(
                                 inkClipboard = inkClipboard,
                                 onCopyInkStrokes = { viewModel.copyInkStrokes(it) },
                                 onPasteInkStrokes = { pageIdx, centerNorm -> viewModel.pasteInkStrokes(pageIdx, centerNorm) },
+                                onRestyleInkStrokes = { pageIdx, strokes, newColor, newThickness ->
+                                    val restyled = strokes.map { s ->
+                                        s.copy(
+                                            color = newColor ?: s.color,
+                                            thickness = newThickness ?: s.thickness,
+                                            timestamp = 0L
+                                        )
+                                    }
+                                    viewModel.moveInkStrokes(pageIdx, strokes, restyled)
+                                    inkStrokeSelection = inkStrokeSelection?.copy(strokes = restyled)
+                                },
                                 imageAnnotations = imageAnnotationsByPage[currentPage].orEmpty(),
                                 imageAnnotationSelection = imageAnnotationSelection?.takeIf { it.pageIndex == currentPage },
                                 onImageAnnotationSelectionChanged = { imageAnnotationSelection = it },
@@ -1151,6 +1162,7 @@ private fun PageContent(
     inkClipboard: List<InkStroke>?,
     onCopyInkStrokes: (List<InkStroke>) -> Unit,
     onPasteInkStrokes: (Int, Offset) -> Unit,
+    onRestyleInkStrokes: (Int, List<InkStroke>, StrokeColor?, StrokeThickness?) -> Unit,
     imageAnnotations: List<PdfImageAnnotation>,
     imageAnnotationSelection: ImageAnnotationSelection?,
     onImageAnnotationSelectionChanged: (ImageAnnotationSelection?) -> Unit,
@@ -1196,6 +1208,7 @@ private fun PageContent(
                 onCommitSelectionMove = { strokes, delta, sz -> onCommitSelectionMove(index, strokes, delta, sz) },
                 onCopyInkStrokes = onCopyInkStrokes,
                 onPasteInkStrokes = { center -> onPasteInkStrokes(index, center) },
+                onRestyleInkStrokes = { strokes, color, thickness -> onRestyleInkStrokes(index, strokes, color, thickness) },
                 onDeletePage = onDeletePage,
                 onInsertPageBefore = onInsertPageBefore,
                 onInsertPageAfter = onInsertPageAfter,

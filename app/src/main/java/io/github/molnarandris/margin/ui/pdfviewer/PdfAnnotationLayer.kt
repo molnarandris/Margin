@@ -2,10 +2,14 @@ package io.github.molnarandris.margin.ui.pdfviewer
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -119,6 +123,7 @@ internal class PdfPageActions(
     val onCommitSelectionMove: (List<InkStroke>, Offset, IntSize) -> Unit,
     val onCopyInkStrokes: (List<InkStroke>) -> Unit,
     val onPasteInkStrokes: (Offset) -> Unit,
+    val onRestyleInkStrokes: (List<InkStroke>, StrokeColor?, StrokeThickness?) -> Unit,
     val onDeletePage: () -> Unit,
     val onInsertPageBefore: () -> Unit,
     val onInsertPageAfter: () -> Unit,
@@ -648,28 +653,58 @@ internal fun PdfAnnotationLayer(
                         }
                         .onSizeChanged { selectionMenuSize = it }
                 ) {
+                    val selColor = activeSel.strokes.map { it.color }.toSet().singleOrNull()
+                    val selThickness = activeSel.strokes.map { it.thickness }.toSet().singleOrNull()
                     Card(
                         elevation = CardDefaults.cardElevation(4.dp),
                         colors = CardDefaults.cardColors(containerColor = Color.White)
                     ) {
-                        Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
-                            IconButton(onClick = {
-                                actions.onCopyInkStrokes(activeSel.strokes)
-                            }) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                        Column {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                StrokeThickness.entries.forEach { t ->
+                                    SelectionStyleButton(isSelected = selThickness == t, onClick = {
+                                        actions.onRestyleInkStrokes(activeSel.strokes, null, t)
+                                    }) {
+                                        val lineH = when (t) {
+                                            StrokeThickness.THIN -> 1.5.dp
+                                            StrokeThickness.MEDIUM -> 3.dp
+                                            StrokeThickness.THICK -> 6.dp
+                                        }
+                                        Box(Modifier.size(18.dp, lineH).background(Color.Black))
+                                    }
+                                }
+                                Box(Modifier.size(1.dp, 20.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                                StrokeColor.entries.forEach { c ->
+                                    SelectionStyleButton(isSelected = selColor == c, onClick = {
+                                        actions.onRestyleInkStrokes(activeSel.strokes, c, null)
+                                    }) {
+                                        Box(Modifier.size(16.dp).background(c.composeColor, RoundedCornerShape(50)))
+                                    }
+                                }
                             }
-                            IconButton(onClick = {
-                                actions.onCopyInkStrokes(activeSel.strokes)
-                                actions.onEraseInkStrokes(activeSel.strokes.map { it.id })
-                                actions.onStrokeSelectionChanged(null)
-                            }) {
-                                Icon(Icons.Default.ContentCut, contentDescription = "Cut")
-                            }
-                            IconButton(onClick = {
-                                actions.onEraseInkStrokes(activeSel.strokes.map { it.id })
-                                actions.onStrokeSelectionChanged(null)
-                            }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete")
+                            Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
+                                IconButton(onClick = {
+                                    actions.onCopyInkStrokes(activeSel.strokes)
+                                }) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                                }
+                                IconButton(onClick = {
+                                    actions.onCopyInkStrokes(activeSel.strokes)
+                                    actions.onEraseInkStrokes(activeSel.strokes.map { it.id })
+                                    actions.onStrokeSelectionChanged(null)
+                                }) {
+                                    Icon(Icons.Default.ContentCut, contentDescription = "Cut")
+                                }
+                                IconButton(onClick = {
+                                    actions.onEraseInkStrokes(activeSel.strokes.map { it.id })
+                                    actions.onStrokeSelectionChanged(null)
+                                }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete")
+                                }
                             }
                         }
                     }
@@ -1029,6 +1064,23 @@ private fun charsFrom(start: TextChar, end: TextChar, allChars: List<TextChar>):
     val lo = minOf(startIdx, endIdx)
     val hi = maxOf(startIdx, endIdx)
     return allChars.subList(lo, hi + 1)
+}
+
+@Composable
+private fun SelectionStyleButton(
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = Modifier.size(32.dp).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isSelected) {
+            Box(Modifier.size(26.dp).border(1.5.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(35)))
+        }
+        content()
+    }
 }
 
 @Composable
