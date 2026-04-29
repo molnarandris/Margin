@@ -92,10 +92,14 @@ internal fun segmentsIntersect(a1: Offset, a2: Offset, b1: Offset, b2: Offset): 
            (d3 > 0 && d4 < 0 || d3 < 0 && d4 > 0)
 }
 
-internal fun strokeIntersectsScribble(strokePts: List<Offset>, scribbleNorm: List<Offset>): Boolean {
+internal fun strokeIntersectsScribble(
+    strokePts: List<Offset>, scribbleNorm: List<Offset>, minCrossings: Int = 3
+): Boolean {
+    var count = 0
     for (i in 0 until strokePts.size - 1)
         for (j in 0 until scribbleNorm.size - 1)
-            if (segmentsIntersect(strokePts[i], strokePts[i+1], scribbleNorm[j], scribbleNorm[j+1])) return true
+            if (segmentsIntersect(strokePts[i], strokePts[i+1], scribbleNorm[j], scribbleNorm[j+1]) &&
+                    ++count >= minCrossings) return true
     return false
 }
 
@@ -113,17 +117,30 @@ internal fun pointToSegmentDist(p: Offset, a: Offset, b: Offset): Float {
 }
 
 internal fun strokeNearScribble(
-    strokeNorm: List<Offset>, scribblePx: List<Offset>, pageSize: IntSize, thresholdPx: Float
+    strokeNorm: List<Offset>, scribblePx: List<Offset>, pageSize: IntSize,
+    thresholdPx: Float, minFraction: Float = 0.3f
 ): Boolean {
     val strokePx = strokeNorm.map { Offset(it.x * pageSize.width, it.y * pageSize.height) }
-    // Check stroke points near scribble segments
-    for (pt in strokePx)
-        for (j in 0 until scribblePx.size - 1)
-            if (pointToSegmentDist(pt, scribblePx[j], scribblePx[j + 1]) <= thresholdPx) return true
-    // Check scribble points near stroke segments (catches parallel/collinear cases)
-    for (pt in scribblePx)
-        for (j in 0 until strokePx.size - 1)
-            if (pointToSegmentDist(pt, strokePx[j], strokePx[j + 1]) <= thresholdPx) return true
+    // Direction 1: fraction of target-stroke points near any scribble segment
+    if (strokePx.size >= 2) {
+        var match = 0
+        for (pt in strokePx)
+            for (j in 0 until scribblePx.size - 1)
+                if (pointToSegmentDist(pt, scribblePx[j], scribblePx[j + 1]) <= thresholdPx) {
+                    match++; break
+                }
+        if (match.toFloat() / strokePx.size >= minFraction) return true
+    }
+    // Direction 2: fraction of scribble points near any target-stroke segment
+    if (scribblePx.size >= 2) {
+        var rev = 0
+        for (pt in scribblePx)
+            for (j in 0 until strokePx.size - 1)
+                if (pointToSegmentDist(pt, strokePx[j], strokePx[j + 1]) <= thresholdPx) {
+                    rev++; break
+                }
+        if (rev.toFloat() / scribblePx.size >= minFraction) return true
+    }
     return false
 }
 
