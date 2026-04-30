@@ -195,6 +195,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openScratchpad() {
+        val state = _uiState.value as? HomeUiState.Ready ?: return
+        viewModelScope.launch {
+            val uri = pdfRepo.getOrCreateScratchpad(state.rootUri) ?: return@launch
+            pdfRepo.prepareScratchpad(uri)
+            _openPdfEvent.emit(uri)
+        }
+    }
+
     fun removeFromDatabase(uri: Uri) {
         val state = _uiState.value as? HomeUiState.Ready ?: return
         viewModelScope.launch {

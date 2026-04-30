@@ -197,6 +197,9 @@ fun HomeScreen(
                                 )
                             )
                             if (uiState is HomeUiState.Ready) {
+                                TextButton(onClick = { viewModel.openScratchpad() }) {
+                                    Text("Scratchpad")
+                                }
                                 TypeFilterToggle(
                                     selected = typeFilter,
                                     onSelect = { viewModel.setTypeFilter(it) }

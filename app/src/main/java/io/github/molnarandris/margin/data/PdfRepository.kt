@@ -375,6 +375,89 @@ class PdfRepository(private val context: Context) {
 
             doc.documentCatalog.metadata = PDMetadata(doc, ByteArrayInputStream(bytes))
         }
+
+        private fun parseXmpDate(text: String): Calendar? = try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US)
+            Calendar.getInstance().also { it.time = sdf.parse(text) ?: return null }
+        } catch (e: Exception) { null }
+
+        fun readPageDatesFromXmp(doc: PDDocument): List<Calendar?> {
+            val metaStream = doc.documentCatalog.metadata ?: return emptyList()
+            return try {
+                val factory = DocumentBuilderFactory.newInstance().also { it.isNamespaceAware = true }
+                val xmlDoc = factory.newDocumentBuilder().parse(metaStream.exportXMPMetadata())
+                val seqNodes = xmlDoc.getElementsByTagNameNS(MARGIN_NS, "PageDates")
+                if (seqNodes.length == 0) return emptyList()
+                val lis = (seqNodes.item(0) as Element).getElementsByTagNameNS(RDF_NS, "li")
+                (0 until lis.length).map { i ->
+                    val text = lis.item(i).textContent.trim()
+                    if (text.isBlank()) null else parseXmpDate(text)
+                }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+
+        fun writePageDatesToXmp(doc: PDDocument, dates: List<Calendar?>) {
+            val factory = DocumentBuilderFactory.newInstance().also { it.isNamespaceAware = true }
+            val builder = factory.newDocumentBuilder()
+
+            val existingStream = doc.documentCatalog.metadata
+            val parsed: org.w3c.dom.Document? = if (existingStream != null) {
+                try { builder.parse(existingStream.exportXMPMetadata()) } catch (e: Exception) { null }
+            } else null
+            val xmpDoc: org.w3c.dom.Document = parsed ?: run {
+                val d = builder.newDocument()
+                val xmpmeta = d.createElementNS("adobe:ns:meta/", "x:xmpmeta")
+                xmpmeta.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "adobe:ns:meta/")
+                d.appendChild(xmpmeta)
+                val rdf = d.createElementNS(RDF_NS, "rdf:RDF")
+                rdf.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:rdf", RDF_NS)
+                xmpmeta.appendChild(rdf)
+                d
+            }
+
+            val existing = xmpDoc.getElementsByTagNameNS(MARGIN_NS, "PageDates")
+            repeat(existing.length) { existing.item(0).parentNode.removeChild(existing.item(0)) }
+
+            val rdfNodes = xmpDoc.getElementsByTagNameNS(RDF_NS, "RDF")
+            val rdf: Element = if (rdfNodes.length > 0) rdfNodes.item(0) as Element else {
+                val r = xmpDoc.createElementNS(RDF_NS, "rdf:RDF")
+                r.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:rdf", RDF_NS)
+                xmpDoc.documentElement.appendChild(r)
+                r
+            }
+
+            var desc: Element? = null
+            val descs = xmpDoc.getElementsByTagNameNS(RDF_NS, "Description")
+            for (i in 0 until descs.length) {
+                val d = descs.item(i) as Element
+                if (d.getAttribute("xmlns:margin") == MARGIN_NS) { desc = d; break }
+            }
+            if (desc == null) {
+                desc = xmpDoc.createElementNS(RDF_NS, "rdf:Description")
+                desc.setAttributeNS(RDF_NS, "rdf:about", "")
+                desc.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:margin", MARGIN_NS)
+                rdf.appendChild(desc)
+            }
+
+            val datesProp = xmpDoc.createElementNS(MARGIN_NS, "margin:PageDates")
+            val seq = xmpDoc.createElementNS(RDF_NS, "rdf:Seq")
+            for (cal in dates) {
+                val li = xmpDoc.createElementNS(RDF_NS, "rdf:li")
+                li.textContent = if (cal == null) "" else calendarToXmpDate(cal)
+                seq.appendChild(li)
+            }
+            datesProp.appendChild(seq)
+            desc.appendChild(datesProp)
+
+            val bytes = ByteArrayOutputStream().also { out ->
+                TransformerFactory.newInstance().newTransformer()
+                    .transform(DOMSource(xmpDoc), StreamResult(out))
+            }.toByteArray()
+
+            doc.documentCatalog.metadata = PDMetadata(doc, ByteArrayInputStream(bytes))
+        }
     }
 
     private val dao = PdfDatabase.getInstance(context).pdfMetadataDao()
@@ -404,7 +487,8 @@ class PdfRepository(private val context: Context) {
         for (file in dir.listFiles().filter { it.name?.startsWith(".") != true }) {
             when {
                 file.isDirectory -> dirs.add(FileSystemItem.DirItem(file.uri, file.name ?: "Untitled", file.lastModified()))
-                file.isFile && file.type == "application/pdf" -> {
+                file.isFile && file.type == "application/pdf"
+                    && file.name != "scratchpad.pdf" -> {
                     val name = file.name ?: "Untitled.pdf"
                     val uriStr = file.uri.toString()
                     val lastModified = file.lastModified()
@@ -451,7 +535,8 @@ class PdfRepository(private val context: Context) {
             for (file in dir.listFiles().filter { it.name?.startsWith(".") != true }) {
                 when {
                     file.isDirectory -> scanDir(file)
-                    file.isFile && file.type == "application/pdf" -> found[file.uri.toString()] = file
+                    file.isFile && file.type == "application/pdf"
+                        && file.name != "scratchpad.pdf" -> found[file.uri.toString()] = file
                 }
             }
         }
@@ -639,6 +724,95 @@ class PdfRepository(private val context: Context) {
             destFile.uri
         } catch (e: Exception) {
             null
+        }
+    }
+
+    suspend fun getOrCreateScratchpad(rootUri: Uri): Uri? = withContext(Dispatchers.IO) {
+        try {
+            val root = DocumentFile.fromTreeUri(context, rootUri) ?: return@withContext null
+            root.findFile("scratchpad.pdf")?.takeIf { it.isFile }?.uri
+                ?: root.findFile("scratchpad")?.takeIf { it.isFile }?.uri
+                ?: run {
+                    val destFile = root.createFile("application/pdf", "scratchpad")
+                        ?: return@withContext null
+                    val doc = PDDocument()
+                    val info = doc.documentInformation
+                    info.creator = "Margin"
+                    info.title = "Scratchpad"
+                    doc.documentInformation = info
+                    val page = PDPage(PDRectangle.A4)
+                    page.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
+                    doc.addPage(page)
+                    writePageDatesToXmp(doc, listOf(null))
+                    context.contentResolver.openOutputStream(destFile.uri)?.use { doc.save(it) }
+                    doc.close()
+                    destFile.uri
+                }
+        } catch (e: Exception) { null }
+    }
+
+    suspend fun readScratchpadPageDates(uri: Uri): List<Calendar?> = withContext(Dispatchers.IO) {
+        try {
+            val doc = PDDocument.load(context.contentResolver.openInputStream(uri)!!)
+            val dates = readPageDatesFromXmp(doc)
+            val pageCount = doc.numberOfPages
+            doc.close()
+            when {
+                dates.size >= pageCount -> dates.take(pageCount)
+                else -> dates + List(pageCount - dates.size) { null }
+            }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    suspend fun prepareScratchpad(uri: Uri) = withContext(Dispatchers.IO) {
+        fileWriteLockFor(uri).withLock {
+            val doc = PDDocument.load(context.contentResolver.openInputStream(uri)!!)
+            val rawDates = readPageDatesFromXmp(doc)
+            val pageCount = doc.numberOfPages
+            val dates: MutableList<Calendar?> = when {
+                rawDates.size >= pageCount -> rawDates.take(pageCount).toMutableList()
+                else -> (rawDates + List(pageCount - rawDates.size) { null }).toMutableList()
+            }
+
+            val cutoff = Calendar.getInstance().also { it.add(Calendar.DAY_OF_YEAR, -14) }
+            val toDelete = dates.indices.filter { i -> dates[i] != null && dates[i]!!.before(cutoff) }
+
+            when {
+                toDelete.size == pageCount -> {
+                    toDelete.sortedDescending().forEach { doc.removePage(it) }
+                    dates.clear()
+                    val newPage = PDPage(PDRectangle.A4)
+                    newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
+                    doc.addPage(newPage)
+                    dates.add(null)
+                }
+                toDelete.isNotEmpty() -> {
+                    toDelete.sortedDescending().forEach { i ->
+                        doc.removePage(i)
+                        dates.removeAt(i)
+                    }
+                }
+                pageCount == 0 -> {
+                    val newPage = PDPage(PDRectangle.A4)
+                    newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
+                    doc.addPage(newPage)
+                    dates.add(null)
+                }
+            }
+
+            writePageDatesToXmp(doc, dates)
+
+            // Inline save — avoids re-acquiring fileWriteLockFor(uri) that save() would do
+            val backup = backupFileFor(uri)
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                backup.outputStream().use { input.copyTo(it) }
+            }
+            val rounded = roundToHalfHour(Calendar.getInstance())
+            doc.documentInformation.setModificationDate(rounded)
+            writeDatesToXmp(doc, createDate = null, modDate = rounded)
+            context.contentResolver.openOutputStream(uri, "wt")!!.use { doc.save(it) }
+            backup.delete()
+            doc.close()
         }
     }
 

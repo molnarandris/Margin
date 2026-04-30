@@ -31,6 +31,7 @@ import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOut
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import io.github.molnarandris.margin.data.PdfRepository
+import java.util.Calendar
 
 data class TextChar(val text: String, val bounds: RectF)
 
@@ -123,13 +124,41 @@ class PdfEditor(
     // ---- Annotation Persistence ----
 
     /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
-    suspend fun writeInkStrokesToPdf(uri: Uri, strokesByPage: Map<Int, List<InkStroke>>) {
+    suspend fun writeInkStrokesToPdf(
+        uri: Uri,
+        strokesByPage: Map<Int, List<InkStroke>>,
+        updatedPageDates: List<Calendar?>? = null
+    ) {
         val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
         strokesByPage.forEach { (pageIndex, strokes) ->
             groupStrokesIntoWords(strokes).forEach { group ->
                 addInkAnnotationToDoc(pdDoc, pageIndex, group)
             }
         }
+        if (updatedPageDates != null) {
+            PdfRepository.writePageDatesToXmp(pdDoc, updatedPageDates)
+        }
+        pdfRepository.save(pdDoc, uri)
+        pdDoc.close()
+    }
+
+    /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
+    suspend fun insertScratchpadPage(
+        uri: Uri,
+        insertBeforeIndex: Int,
+        deleteFirstPage: Boolean,
+        updatedPageDates: List<Calendar?>?
+    ) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        if (deleteFirstPage) pdDoc.removePage(0)
+        val effectiveIndex = if (deleteFirstPage) (insertBeforeIndex - 1).coerceAtLeast(0)
+                             else insertBeforeIndex
+        val mediaBox = pdDoc.getPage(effectiveIndex.coerceIn(0, pdDoc.numberOfPages - 1)).mediaBox
+        val newPage = PDPage(mediaBox)
+        newPage.cosObject.setBoolean(COSName.getPDFName("MarginApp"), true)
+        if (effectiveIndex >= pdDoc.numberOfPages) pdDoc.addPage(newPage)
+        else pdDoc.pages.insertBefore(newPage, pdDoc.getPage(effectiveIndex))
+        if (updatedPageDates != null) PdfRepository.writePageDatesToXmp(pdDoc, updatedPageDates)
         pdfRepository.save(pdDoc, uri)
         pdDoc.close()
     }

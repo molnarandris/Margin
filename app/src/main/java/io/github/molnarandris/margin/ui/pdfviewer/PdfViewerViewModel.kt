@@ -32,6 +32,7 @@ import kotlinx.coroutines.withContext
 import io.github.molnarandris.margin.data.PdfRepository
 import io.github.molnarandris.margin.data.PreferencesRepository
 import java.io.File
+import java.util.Calendar
 
 sealed class LinkTarget {
     data class Url(val uri: Uri) : LinkTarget()
@@ -350,6 +351,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var loadedDirUri: Uri? = null
     private var loadedDocId: String? = null
     private var loadedFileName: String = ""
+    private var scratchpadPageDates: MutableList<Calendar?>? = null
+    private var scratchpadDatesDirty: Boolean = false
+    private val isScratchpad: Boolean get() = loadedFileName == "scratchpad"
     var firstVisiblePageIndex: Int = 0
 
     private val _pendingScrollToPage = MutableStateFlow(-1)
@@ -377,6 +381,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     } ?: ""
             }
             loadedFileName = fileName
+            scratchpadPageDates = null
+            scratchpadDatesDirty = false
+            if (fileName == "scratchpad") {
+                scratchpadPageDates = withContext(Dispatchers.IO) {
+                    pdfRepository.readScratchpadPageDates(uri).toMutableList()
+                }
+            }
             val lastPage = prefsRepo.getLastPage(uri) ?: 0
             pdfRepository.recordOpen(dirUri, uri)
             renderPages(dirUri, docId, fileName, lastPage)
@@ -435,10 +446,30 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         rerenderJob?.cancel()
         flushPendingInkStrokes()
 
+        val pageCount = (_uiState.value as? PdfViewerUiState.Ready)?.pages?.size ?: 0
+        val needsDeleteFirst = isScratchpad && pageCount >= 10
+
         // Phase 1: show blank page immediately (no IO)
         val currentState = _uiState.value
         if (currentState is PdfViewerUiState.Ready) {
-            val refPage = currentState.pages.getOrElse(insertBeforeIndex) { currentState.pages.last() }
+            val newPages = currentState.pages.toMutableList()
+
+            // Scratchpad 10-page limit: remove page 0 before inserting
+            if (needsDeleteFirst) {
+                newPages.removeAt(0)
+                _completedInkStrokes.update { map ->
+                    buildMap {
+                        map.forEach { (idx, strokes) ->
+                            if (idx > 0) put(idx - 1, strokes)
+                        }
+                    }
+                }
+            }
+
+            val effectiveInsert = if (needsDeleteFirst) (insertBeforeIndex - 1).coerceAtLeast(0)
+                                  else insertBeforeIndex
+
+            val refPage = newPages.getOrElse(effectiveInsert) { newPages.last() }
             val blankBitmap = Bitmap.createBitmap(
                 refPage.bitmap.width, refPage.bitmap.height, Bitmap.Config.ARGB_8888
             ).also { android.graphics.Canvas(it).drawColor(android.graphics.Color.WHITE) }
@@ -450,18 +481,29 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 words = emptyList(),
                 highlights = emptyList()
             )
-            val newPages = currentState.pages.toMutableList()
-            newPages.add(insertBeforeIndex.coerceIn(0, newPages.size), blankPage)
+            newPages.add(effectiveInsert.coerceIn(0, newPages.size), blankPage)
             _uiState.value = currentState.copy(pages = newPages)
 
             // Shift ink stroke page indices for pages at or after insertion point
             _completedInkStrokes.update { map ->
                 map.entries.associate { (pageIndex, strokes) ->
-                    if (pageIndex >= insertBeforeIndex) pageIndex + 1 to strokes
+                    if (pageIndex >= effectiveInsert) pageIndex + 1 to strokes
                     else pageIndex to strokes
                 }
             }
-            _pendingScrollToPage.value = insertBeforeIndex
+
+            // Update scratchpad page dates in-memory
+            if (isScratchpad) {
+                val dates = scratchpadPageDates
+                if (dates != null) {
+                    if (needsDeleteFirst && dates.isNotEmpty()) dates.removeAt(0)
+                    val insertIdx = effectiveInsert.coerceIn(0, dates.size)
+                    dates.add(insertIdx, null)
+                    scratchpadDatesDirty = true
+                }
+            }
+
+            _pendingScrollToPage.value = effectiveInsert
 
             // Phase 2: save to PDF and silently reopen renderer in background
             launchSave {
@@ -471,7 +513,17 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     renderer?.close(); pfd?.close()
                     renderer = null; pfd = null
 
-                    pdfEditor.insertPageInDoc(uri, insertBeforeIndex)
+                    if (isScratchpad) {
+                        pdfEditor.insertScratchpadPage(
+                            uri = uri,
+                            insertBeforeIndex = insertBeforeIndex,
+                            deleteFirstPage = needsDeleteFirst,
+                            updatedPageDates = scratchpadPageDates?.toList()
+                        )
+                        withContext(Dispatchers.Main) { scratchpadDatesDirty = false }
+                    } else {
+                        pdfEditor.insertPageInDoc(uri, insertBeforeIndex)
+                    }
 
                     // Silently reopen renderer — no Loading state, no renderPages()
                     val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
@@ -489,7 +541,17 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     renderer?.close(); pfd?.close()
                     renderer = null; pfd = null
 
-                    pdfEditor.insertPageInDoc(uri, insertBeforeIndex)
+                    if (isScratchpad) {
+                        pdfEditor.insertScratchpadPage(
+                            uri = uri,
+                            insertBeforeIndex = insertBeforeIndex,
+                            deleteFirstPage = needsDeleteFirst,
+                            updatedPageDates = scratchpadPageDates?.toList()
+                        )
+                        withContext(Dispatchers.Main) { scratchpadDatesDirty = false }
+                    } else {
+                        pdfEditor.insertPageInDoc(uri, insertBeforeIndex)
+                    }
                 }
                 withContext(Dispatchers.Main) {
                     _pendingScrollToPage.value = insertBeforeIndex
@@ -519,6 +581,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 .associate { (idx, strokes) ->
                     if (idx > pageIndex) idx - 1 to strokes else idx to strokes
                 }
+        }
+        if (isScratchpad) {
+            val dates = scratchpadPageDates
+            if (dates != null && pageIndex in dates.indices) {
+                dates.removeAt(pageIndex)
+                scratchpadDatesDirty = true
+            }
         }
 
         // Phase 2: Delayed disk write — cancelled if undo is triggered
@@ -562,6 +631,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
         }
+        if (isScratchpad) {
+            val dates = scratchpadPageDates
+            if (dates != null) {
+                sorted.sortedDescending().forEach { i ->
+                    if (i in dates.indices) dates.removeAt(i)
+                }
+                scratchpadDatesDirty = true
+            }
+        }
 
         saveScope.launch {
             val uri = docUri ?: return@launch
@@ -594,6 +672,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             }.toMutableMap()
             if (inkStrokes.isNotEmpty()) shifted[pageIndex] = inkStrokes
             shifted
+        }
+        if (isScratchpad) {
+            val dates = scratchpadPageDates
+            if (dates != null) {
+                dates.add(pageIndex.coerceIn(0, dates.size), null)
+                scratchpadDatesDirty = true
+            }
         }
         _pendingScrollToPage.value = pageIndex
     }
@@ -737,7 +822,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         strokeSaveJob = null
         val toSave = pendingInkStrokes.mapValues { it.value.toList() }
         pendingInkStrokes.clear()
-        if (toSave.isEmpty()) return
+        val datesToWrite = if (isScratchpad && scratchpadDatesDirty) scratchpadPageDates?.toList()
+                           else null
+        if (toSave.isEmpty() && datesToWrite == null) return
         launchSave {
             val uri = docUri ?: return@launchSave
             val app = getApplication<Application>()
@@ -747,14 +834,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     val current = _completedInkStrokes.value[pageIndex].orEmpty()
                     strokes.filter { s -> current.any { it.id == s.id } }
                 }.filter { it.value.isNotEmpty() }
-                if (filtered.isEmpty()) return@withLock
+                if (filtered.isEmpty() && datesToWrite == null) return@withLock
                 renderer?.close(); pfd?.close()
                 renderer = null; pfd = null
-                pdfEditor.writeInkStrokesToPdf(uri, filtered)
+                pdfEditor.writeInkStrokesToPdf(uri, filtered, datesToWrite)
                 val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
                 pfd = newPfd
                 renderer = PdfRenderer(newPfd)
             }
+            if (datesToWrite != null) withContext(Dispatchers.Main) { scratchpadDatesDirty = false }
         }
     }
 
@@ -832,6 +920,13 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         val stroke = InkStroke(strokeId, normalized, color, thickness, roundCap = true, timestamp = System.currentTimeMillis())
         _completedInkStrokes.update { map ->
             map + (pageIndex to (map[pageIndex].orEmpty() + stroke))
+        }
+        if (isScratchpad) {
+            val dates = scratchpadPageDates
+            if (dates != null && pageIndex in dates.indices && dates[pageIndex] == null) {
+                dates[pageIndex] = Calendar.getInstance()
+                scratchpadDatesDirty = true
+            }
         }
         pushUndo(UndoableAction.StrokeAdded(pageIndex, stroke))
         pendingInkStrokes.getOrPut(pageIndex) { mutableListOf() }.add(stroke)
