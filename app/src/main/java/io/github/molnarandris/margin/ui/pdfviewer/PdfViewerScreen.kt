@@ -159,6 +159,8 @@ fun PdfViewerScreen(
     var tocRenameIndex by remember { mutableStateOf<Int?>(null) }
     var tocRenameText by remember { mutableStateOf("") }
     var tocDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var addTocPage by remember { mutableStateOf<Int?>(null) }
+    var addTocTitle by remember { mutableStateOf("") }
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val searchFocusRequester = remember { FocusRequester() }
@@ -592,6 +594,35 @@ fun PdfViewerScreen(
         )
     }
 
+    if (addTocPage != null) {
+        val pageForToc = addTocPage!!
+        AlertDialog(
+            onDismissRequest = { addTocPage = null },
+            title = { Text("Add to table of contents") },
+            text = {
+                OutlinedTextField(
+                    value = addTocTitle,
+                    onValueChange = { addTocTitle = it },
+                    label = { Text("Title") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val newItem = OutlineItem(title = addTocTitle, pageIndex = pageForToc, level = 0)
+                    val insertAt = outline.indexOfFirst { it.pageIndex > pageForToc }
+                    val newList = outline.toMutableList()
+                    if (insertAt == -1) newList.add(newItem) else newList.add(insertAt, newItem)
+                    viewModel.updateOutline(newList)
+                    addTocPage = null
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { addTocPage = null }) { Text("Cancel") }
+            }
+        )
+    }
+
     Scaffold(
         containerColor = Color(0xFFE0E0E0),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -999,18 +1030,9 @@ fun PdfViewerScreen(
                                         }
                                     }
                                 },
-                                onDeletePage = {
-                                    val deletedPage = currentPage
-                                    viewModel.deletePage(deletedPage)
-                                    if (deletedPage >= state.pages.size - 1) {
-                                        currentPage = (state.pages.size - 2).coerceAtLeast(0)
-                                    }
-                                    outerScope.launch {
-                                        val dismissJob = launch { delay(1500); snackbarHostState.currentSnackbarData?.dismiss() }
-                                        val result = snackbarHostState.showSnackbar("Page deleted", actionLabel = "Undo")
-                                        dismissJob.cancel()
-                                        if (result == SnackbarResult.ActionPerformed) viewModel.cancelDelete()
-                                    }
+                                onAddPageToToc = {
+                                    addTocTitle = "Page ${currentPage + 1}"
+                                    addTocPage = currentPage
                                 },
                                 onInsertPageBefore = { viewModel.insertPage(currentPage) },
                                 onInsertPageAfter = { viewModel.insertPage(currentPage + 1) },
@@ -1159,7 +1181,7 @@ private fun PageContent(
     onStrokeSelectionChanged: (InkStrokeSelection?) -> Unit,
     onSelectionDragDelta: (Offset) -> Unit,
     onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit,
-    onDeletePage: () -> Unit,
+    onAddPageToToc: () -> Unit,
     onInsertPageBefore: () -> Unit,
     onInsertPageAfter: () -> Unit,
     inkClipboard: List<InkStroke>?,
@@ -1212,7 +1234,7 @@ private fun PageContent(
                 onCopyInkStrokes = onCopyInkStrokes,
                 onPasteInkStrokes = { center -> onPasteInkStrokes(index, center) },
                 onRestyleInkStrokes = { strokes, color, thickness -> onRestyleInkStrokes(index, strokes, color, thickness) },
-                onDeletePage = onDeletePage,
+                onAddPageToToc = onAddPageToToc,
                 onInsertPageBefore = onInsertPageBefore,
                 onInsertPageAfter = onInsertPageAfter,
                 onImageAnnotationSelectionChanged = onImageAnnotationSelectionChanged,

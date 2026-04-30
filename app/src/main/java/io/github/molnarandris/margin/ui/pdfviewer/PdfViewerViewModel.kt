@@ -1336,7 +1336,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 for (index in remainingIndices) {
                     renderMutex.withLock {
-                        newRenderer.openPage(index).use { page ->
+                        val r = renderer ?: return@withLock
+                        r.openPage(index).use { page ->
                             val bitmap = Bitmap.createBitmap(
                                 (page.width * 2f).toInt(),
                                 (page.height * 2f).toInt(),
@@ -1520,7 +1521,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 for (index in remainingIndices) {
                     renderMutex.withLock {
-                        newRenderer.openPage(index).use { page ->
+                        val r = renderer ?: return@withLock
+                        r.openPage(index).use { page ->
                             val bitmap = Bitmap.createBitmap(
                                 (page.width * 2f).toInt(),
                                 (page.height * 2f).toInt(),

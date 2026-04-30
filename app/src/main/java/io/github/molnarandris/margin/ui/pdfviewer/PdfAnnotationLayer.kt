@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
@@ -124,7 +125,7 @@ internal class PdfPageActions(
     val onCopyInkStrokes: (List<InkStroke>) -> Unit,
     val onPasteInkStrokes: (Offset) -> Unit,
     val onRestyleInkStrokes: (List<InkStroke>, StrokeColor?, StrokeThickness?) -> Unit,
-    val onDeletePage: () -> Unit,
+    val onAddPageToToc: () -> Unit,
     val onInsertPageBefore: () -> Unit,
     val onInsertPageAfter: () -> Unit,
     val onImageAnnotationSelectionChanged: (ImageAnnotationSelection?) -> Unit,
@@ -968,9 +969,9 @@ internal fun PdfAnnotationLayer(
                         Row(modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.dp)) {
                             IconButton(onClick = {
                                 showPageContextMenu = false
-                                actions.onDeletePage()
+                                actions.onAddPageToToc()
                             }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete page")
+                                Icon(Icons.Default.BookmarkAdd, contentDescription = "Add to TOC")
                             }
                             IconButton(onClick = {
                                 showPageContextMenu = false
