@@ -148,6 +148,7 @@ fun PdfViewerScreen(
     val inkClipboard by viewModel.inkClipboard.collectAsState()
     val penColor by viewModel.penColor.collectAsState()
     val penThickness by viewModel.penThickness.collectAsState()
+    val knownAuthors by viewModel.knownAuthors.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
     val previousDocParams by viewModel.previousDocParams.collectAsState()
@@ -294,6 +295,7 @@ fun PdfViewerScreen(
                 createdAt = pdfCreatedAt,
                 fileUri = docUri,
                 rootUri = dirUri,
+                knownAuthors = knownAuthors,
                 onSave = { newTitle, newAuthors, newPeople, newArxivId ->
                     viewModel.setMetadata(newTitle, newAuthors, pdfProjects, newPeople, newArxivId)
                     isEditDialogVisible = false

@@ -13,9 +13,12 @@ import io.github.molnarandris.margin.data.PreferencesRepository
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class SortOrder { BY_NAME, BY_RECENT }
@@ -79,6 +82,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _typeFilter = MutableStateFlow(TypeFilter.ALL)
     val typeFilter: StateFlow<TypeFilter> = _typeFilter.asStateFlow()
+
+    val knownAuthors: StateFlow<List<String>> = _uiState
+        .map { state ->
+            (state as? HomeUiState.Ready)?.allItems
+                ?.filterIsInstance<FileSystemItem.PdfItem>()
+                ?.flatMap { it.pdf.authors }
+                ?.distinct()?.sorted() ?: emptyList()
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
         viewModelScope.launch {

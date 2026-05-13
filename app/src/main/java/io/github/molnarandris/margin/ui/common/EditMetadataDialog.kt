@@ -3,15 +3,19 @@ package io.github.molnarandris.margin.ui.common
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,8 +26,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -38,15 +44,19 @@ fun EditMetadataDialog(
     createdAt: Long,
     fileUri: Uri,
     rootUri: Uri?,
+    knownAuthors: List<String> = emptyList(),
     onSave: (title: String, authors: List<String>, people: List<String>, arxivId: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
     var titleText by rememberSaveable(title) { mutableStateOf(title) }
-    var authorText by rememberSaveable(authors) { mutableStateOf(authors.joinToString(", ")) }
+    var authorValue by rememberSaveable(authors, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(authors.joinToString(", ")))
+    }
     var peopleText by rememberSaveable(people) { mutableStateOf(people.joinToString(", ")) }
     var arxivText by rememberSaveable(arxivId) { mutableStateOf(arxivId) }
     var fileSize by remember { mutableStateOf<Long?>(null) }
+    var authorFocused by remember { mutableStateOf(false) }
 
     LaunchedEffect(fileUri) {
         fileSize = withContext(Dispatchers.IO) {
@@ -59,6 +69,26 @@ fun EditMetadataDialog(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val textColor = MaterialTheme.colorScheme.onSurface
     val cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+
+    // Find the comma-delimited token the cursor is sitting in.
+    val authorSuggestions = remember(authorValue, knownAuthors) {
+        val text = authorValue.text
+        val cursor = authorValue.selection.end.coerceIn(0, text.length)
+        val prevComma = text.lastIndexOf(',', cursor - 1)
+        val nextComma = text.indexOf(',', cursor)
+        val tokenStart = if (prevComma == -1) 0 else prevComma + 1
+        val tokenEnd = if (nextComma == -1) text.length else nextComma
+        val currentToken = text.substring(tokenStart, tokenEnd).trim()
+
+        if (currentToken.isBlank()) return@remember emptyList()
+
+        val otherSegments = (text.substring(0, tokenStart) + text.substring(tokenEnd))
+            .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+
+        knownAuthors
+            .filter { it.contains(currentToken, ignoreCase = true) && it !in otherSegments }
+            .take(5)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -78,13 +108,15 @@ fun EditMetadataDialog(
                 Text("Authors", style = labelStyle, color = labelColor)
                 Spacer(Modifier.height(2.dp))
                 BasicTextField(
-                    value = authorText,
-                    onValueChange = { authorText = it },
+                    value = authorValue,
+                    onValueChange = { authorValue = it },
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
                     cursorBrush = cursorBrush,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { authorFocused = it.isFocused },
                     decorationBox = { innerTextField ->
-                        if (authorText.isEmpty()) {
+                        if (authorValue.text.isEmpty()) {
                             Text(
                                 "Separate with commas",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -94,6 +126,32 @@ fun EditMetadataDialog(
                         innerTextField()
                     }
                 )
+                if (authorFocused && authorSuggestions.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        items(authorSuggestions) { suggestion ->
+                            SuggestionChip(
+                                onClick = {
+                                    val text = authorValue.text
+                                    val cursor = authorValue.selection.end.coerceIn(0, text.length)
+                                    val prevComma = text.lastIndexOf(',', cursor - 1)
+                                    val nextComma = text.indexOf(',', cursor)
+                                    val tokenStart = if (prevComma == -1) 0 else prevComma + 1
+                                    val tokenEnd = if (nextComma == -1) text.length else nextComma
+                                    val rawToken = text.substring(tokenStart, tokenEnd)
+                                    val leadingSpace = if (rawToken.startsWith(" ")) " " else ""
+                                    val after = text.substring(tokenEnd)
+                                    val newText = text.substring(0, tokenStart) + leadingSpace + suggestion +
+                                        if (after.isBlank()) ", " else after
+                                    val newCursor = tokenStart + leadingSpace.length + suggestion.length +
+                                        if (after.isBlank()) 2 else 0
+                                    authorValue = TextFieldValue(newText, androidx.compose.ui.text.TextRange(newCursor))
+                                },
+                                label = { Text(suggestion) }
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 Text("People", style = labelStyle, color = labelColor)
                 Spacer(Modifier.height(2.dp))
@@ -144,7 +202,7 @@ fun EditMetadataDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val parsedAuthors = authorText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                val parsedAuthors = authorValue.text.split(",").map { it.trim() }.filter { it.isNotBlank() }
                 val parsedPeople = peopleText.split(",").map { it.trim() }.filter { it.isNotBlank() }
                 onSave(titleText.trim(), parsedAuthors, parsedPeople, arxivText.trim())
             }) { Text("Save") }

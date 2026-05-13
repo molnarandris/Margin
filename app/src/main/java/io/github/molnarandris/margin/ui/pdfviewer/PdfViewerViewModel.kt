@@ -146,6 +146,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _inkClipboard = MutableStateFlow<List<InkStroke>?>(null)
     val inkClipboard: StateFlow<List<InkStroke>?> = _inkClipboard.asStateFlow()
 
+    private val _knownAuthors = MutableStateFlow<List<String>>(emptyList())
+    val knownAuthors: StateFlow<List<String>> = _knownAuthors.asStateFlow()
+
     private val _penColor = MutableStateFlow(StrokeColor.BLACK)
     val penColor: StateFlow<StrokeColor> = _penColor.asStateFlow()
 
@@ -164,6 +167,9 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
             prefsRepo.getPenThickness()
                 ?.let { name -> StrokeThickness.entries.firstOrNull { it.name == name } }
                 ?.let { _penThickness.value = it }
+        }
+        viewModelScope.launch {
+            _knownAuthors.value = pdfRepository.getKnownAuthors()
         }
     }
 

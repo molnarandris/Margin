@@ -103,6 +103,7 @@ fun HomeScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val typeFilter by viewModel.typeFilter.collectAsState()
+    val knownAuthors by viewModel.knownAuthors.collectAsState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -313,7 +314,8 @@ fun HomeScreen(
                             onPdfDelete = { viewModel.deleteItem(it.uri) },
                             onPdfMetadataUpdate = { pdf, title, authors, projects, people, arxivId ->
                                 viewModel.updateMetadata(pdf, title, authors, projects, people, arxivId)
-                            }
+                            },
+                            knownAuthors = knownAuthors
                         )
                     }
                 }
@@ -449,6 +451,7 @@ private fun ContentList(
     onPdfClick: (PdfFile) -> Unit,
     onPdfDelete: (PdfFile) -> Unit,
     onPdfMetadataUpdate: (PdfFile, String, List<String>, List<String>, List<String>, String) -> Unit,
+    knownAuthors: List<String> = emptyList(),
     listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier
 ) {
@@ -482,6 +485,7 @@ private fun ContentList(
             createdAt = pdf.createdAt,
             fileUri = pdf.uri,
             rootUri = rootUri,
+            knownAuthors = knownAuthors,
             onSave = { newTitle, newAuthors, newPeople, newArxivId ->
                 onPdfMetadataUpdate(pdf, newTitle, newAuthors, pdf.projects, newPeople, newArxivId)
                 editTarget = null

@@ -593,6 +593,15 @@ class PdfRepository(private val context: Context) {
         }
     }
 
+    suspend fun getKnownAuthors(): List<String> = withContext(Dispatchers.IO) {
+        dao.getAllAuthors()
+            .flatMap { it.split(";") }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+    }
+
     suspend fun recordOpen(dirUri: Uri, docUri: Uri) = withContext(Dispatchers.IO) {
         val timestamp = System.currentTimeMillis()
         dao.updateLastOpened(docUri.toString(), timestamp)
