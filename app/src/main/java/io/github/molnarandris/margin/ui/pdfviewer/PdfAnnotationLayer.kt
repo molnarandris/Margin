@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.StickyNote2
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -29,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -125,6 +129,7 @@ internal class PdfPageActions(
     val onCopyInkStrokes: (List<InkStroke>) -> Unit,
     val onPasteInkStrokes: (Offset) -> Unit,
     val onRestyleInkStrokes: (List<InkStroke>, StrokeColor?, StrokeThickness?) -> Unit,
+    val onCreateNotePage: (android.graphics.RectF, String) -> Unit,
     val onAddPageToToc: () -> Unit,
     val onInsertPageBefore: () -> Unit,
     val onInsertPageAfter: () -> Unit,
@@ -133,6 +138,8 @@ internal class PdfPageActions(
     val onCommitImageMove: (PdfImageAnnotation, Offset, IntSize) -> Unit,
     val onCommitImageResize: (PdfImageAnnotation, ResizeHandle, Offset, IntSize) -> Unit,
     val onDeleteImageAnnotation: (PdfImageAnnotation) -> Unit,
+    val onRemoveNoteLink: (notePageIndex: Int) -> Unit,
+    val onRemoveNotePage: (notePageIndex: Int) -> Unit,
 )
 
 @Composable
@@ -150,6 +157,8 @@ internal fun PdfAnnotationLayer(
     var showPageContextMenu by remember { mutableStateOf(false) }
     var contextMenuOffset by remember { mutableStateOf(Offset.Zero) }
     var contextMenuSize by remember { mutableStateOf(IntSize.Zero) }
+    var noteLinkMenuTarget by remember { mutableStateOf<Pair<android.graphics.RectF, Int>?>(null) }
+    var noteLinkMenuSize by remember { mutableStateOf(IntSize.Zero) }
     var selectionMenuSize by remember { mutableStateOf(IntSize.Zero) }
     val selectionMenuSizeRef = rememberUpdatedState(selectionMenuSize)
     var imageMenuSize by remember { mutableStateOf(IntSize.Zero) }
@@ -340,6 +349,18 @@ internal fun PdfAnnotationLayer(
                 if (triggerLasso) currentInkStroke = null  // Clear for lasso; ink path clears after async
 
                 if (triggerLasso && pageSize != IntSize.Zero) {
+                    if (isApproxRectangle(points)) {
+                        val minX = points.minOf { it.x }; val maxX = points.maxOf { it.x }
+                        val minY = points.minOf { it.y }; val maxY = points.maxOf { it.y }
+                        val rectPR = android.graphics.RectF(
+                            minX / pageSize.width  * page.nativeWidth,
+                            minY / pageSize.height * page.nativeHeight,
+                            maxX / pageSize.width  * page.nativeWidth,
+                            maxY / pageSize.height * page.nativeHeight
+                        )
+                        actionsRef.value.onCreateNotePage(rectPR, "")
+                        return@awaitEachGesture
+                    }
                     // ── Phase B: Compute selection ────────────────────────────────
                     val pageStrokes = inkStrokesRef.value
                     val selected = pageStrokes.filter {
@@ -395,10 +416,14 @@ internal fun PdfAnnotationLayer(
         // Tap / long-press handler on the page surface
         Box(
             modifier = Modifier.matchParentSize()
-                .pointerInput(page.links, page.words, page.highlights) {
+                .pointerInput(page.links, page.words, page.highlights, page.noteLinks) {
                     detectTapGestures(
                         onDoubleTap = { if (!lastDownWasStylus) actions.onBarsVisibleToggle() },
                         onTap = { tapOffset ->
+                            if (noteLinkMenuTarget != null) {
+                                noteLinkMenuTarget = null
+                                return@detectTapGestures
+                            }
                             if (showPageContextMenu) {
                                 showPageContextMenu = false
                                 return@detectTapGestures
@@ -408,6 +433,19 @@ internal fun PdfAnnotationLayer(
                                 return@detectTapGestures
                             }
                             if (pageSize == IntSize.Zero) return@detectTapGestures
+                            if (page.noteLinks.isNotEmpty()) {
+                                val radiusPx = with(density) { 10.dp.toPx() }
+                                val noteLinkHit = page.noteLinks.firstOrNull { (r, _) ->
+                                    val cx = r.right / page.nativeWidth * pageSize.width
+                                    val cy = r.top   / page.nativeHeight * pageSize.height
+                                    (tapOffset - Offset(cx, cy)).getDistance() <= radiusPx
+                                }
+                                if (noteLinkHit != null) {
+                                    val (r, notePageIndex) = noteLinkHit
+                                    actions.onLinkTap(LinkTarget.Goto(notePageIndex, 0f, 0f, 0f), r)
+                                    return@detectTapGestures
+                                }
+                            }
                             val pdfX = tapOffset.x / pageSize.width * page.nativeWidth
                             val pdfY = tapOffset.y / pageSize.height * page.nativeHeight
                             val hit = page.links.firstOrNull { link ->
@@ -431,6 +469,19 @@ internal fun PdfAnnotationLayer(
                         },
                         onLongPress = { longPressOffset ->
                             if (pageSize == IntSize.Zero) return@detectTapGestures
+                            // Long press on a note-link circle → show remove menu
+                            if (page.noteLinks.isNotEmpty()) {
+                                val radiusPx = with(density) { 10.dp.toPx() }
+                                val hit = page.noteLinks.firstOrNull { (r, _) ->
+                                    val cx = r.right / page.nativeWidth * pageSize.width
+                                    val cy = r.top   / page.nativeHeight * pageSize.height
+                                    (longPressOffset - Offset(cx, cy)).getDistance() <= radiusPx
+                                }
+                                if (hit != null) {
+                                    noteLinkMenuTarget = hit
+                                    return@detectTapGestures
+                                }
+                            }
                             // Long press on an unselected image → select it
                             if (imageAnnotationSelectionRef.value == null) {
                                 val imgHit = imageAnnotationsRef.value.firstOrNull { img ->
@@ -504,6 +555,24 @@ internal fun PdfAnnotationLayer(
                     val cx = firstBound.right / page.nativeWidth  * size.width
                     val cy = firstBound.top   / page.nativeHeight * size.height
                     drawCircle(Color(0xFFFF9800), radius = 5.dp.toPx(), center = Offset(cx, cy))
+                }
+            }
+        }
+        if (page.noteLinks.isNotEmpty()) {
+            Canvas(modifier = Modifier.matchParentSize()) {
+                page.noteLinks.forEach { (r, _) ->
+                    val left   = r.left   / page.nativeWidth  * size.width
+                    val top    = r.top    / page.nativeHeight * size.height
+                    val right  = r.right  / page.nativeWidth  * size.width
+                    val bottom = r.bottom / page.nativeHeight * size.height
+                    drawRect(
+                        color = Color(0xFF1E88E5.toInt()).copy(alpha = 0.35f),
+                        topLeft = Offset(left, top),
+                        size = Size(right - left, bottom - top),
+                        style = Stroke(width = 1.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f))
+                    )
+                    drawCircle(Color(0xFF1E88E5.toInt()), radius = 10.dp.toPx(), center = Offset(right, top))
                 }
             }
         }
@@ -930,6 +999,51 @@ internal fun PdfAnnotationLayer(
                                     IconButton(onClick = { actions.onAnnotateHighlight(sel.existingHighlight) }) {
                                         Icon(Icons.AutoMirrored.Filled.StickyNote2, contentDescription = "Add note")
                                     }
+                                    IconButton(onClick = {
+                                        val allChars = sel.selectedChars
+                                        val lineH    = allChars.map { it.bounds.height() }.average().toFloat()
+                                        val selectedSet = allChars.toHashSet()
+
+                                        // Find the words that contain the selected chars; their
+                                        // bounds.top values are the definitive line baselines.
+                                        val selWordBaselines = page.words
+                                            .filter { w -> w.chars.any { it in selectedSet } }
+                                            .map { it.bounds.top }
+
+                                        val lineLeft: Float
+                                        val lineRight: Float
+                                        if (selWordBaselines.isNotEmpty()) {
+                                            val baseMin = selWordBaselines.min()
+                                            val baseMax = selWordBaselines.max()
+                                            // Every word whose baseline is on one of the selected lines
+                                            val lineWords = page.words.filter { w ->
+                                                w.bounds.top >= baseMin - lineH * 0.5f &&
+                                                w.bounds.top <= baseMax + lineH * 0.5f
+                                            }
+                                            lineLeft  = lineWords.minOfOrNull { it.bounds.left }  ?: allChars.minOf { it.bounds.left }
+                                            lineRight = lineWords.maxOfOrNull { it.bounds.right } ?: allChars.maxOf { it.bounds.right }
+                                        } else {
+                                            lineLeft  = allChars.minOf { it.bounds.left }
+                                            lineRight = allChars.maxOf { it.bounds.right }
+                                        }
+
+                                        val selVisualTop = allChars.minOf { it.bounds.top - it.bounds.height() }
+                                        val selVisualBot = allChars.maxOf { it.bounds.top }
+                                        val rect = android.graphics.RectF(
+                                            lineLeft,
+                                            selVisualTop - lineH * 2f,
+                                            lineRight,
+                                            selVisualBot  + lineH * 2f
+                                        )
+                                        val quotedText = page.words
+                                            .filter { w -> w.chars.any { it in selectedSet } }
+                                            .joinToString(" ") { w ->
+                                                w.chars.filter { it in selectedSet }.joinToString("") { it.text }
+                                            }
+                                        actions.onCreateNotePage(rect, quotedText)
+                                    }) {
+                                        Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = "Add note page")
+                                    }
                                 }
                                 IconButton(onClick = {
                                     val selectedSet = sel.selectedChars.toHashSet()
@@ -944,6 +1058,41 @@ internal fun PdfAnnotationLayer(
                                     Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+        val noteLinkTarget = noteLinkMenuTarget
+        if (noteLinkTarget != null && pageSize != IntSize.Zero) {
+            with(density) {
+                val cx = (noteLinkTarget.first.right / page.nativeWidth * pageSize.width).roundToInt()
+                val cy = (noteLinkTarget.first.top   / page.nativeHeight * pageSize.height).roundToInt()
+                val gapPx = 8.dp.roundToPx()
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            val menuX = (cx - noteLinkMenuSize.width / 2)
+                                .coerceIn(0, (pageSize.width - noteLinkMenuSize.width).coerceAtLeast(0))
+                            val menuY = (cy - gapPx - noteLinkMenuSize.height).coerceAtLeast(0)
+                            IntOffset(menuX, menuY)
+                        }
+                        .onSizeChanged { noteLinkMenuSize = it }
+                ) {
+                    Card(
+                        elevation = CardDefaults.cardElevation(4.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                actions.onRemoveNoteLink(noteLinkTarget.second)
+                                noteLinkMenuTarget = null
+                            }) { Text("Remove link") }
+                            Box(Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                            TextButton(onClick = {
+                                actions.onRemoveNotePage(noteLinkTarget.second)
+                                noteLinkMenuTarget = null
+                            }) { Text("Remove with note page") }
                         }
                     }
                 }

@@ -1032,6 +1032,7 @@ fun PdfViewerScreen(
                                         }
                                     }
                                 },
+                                onCreateNotePage = { pageIdx, rect, qt -> viewModel.createNotePage(pageIdx, rect, qt) },
                                 onAddPageToToc = {
                                     addTocTitle = "Page ${currentPage + 1}"
                                     addTocPage = currentPage
@@ -1094,6 +1095,8 @@ fun PdfViewerScreen(
                                     viewModel.deleteImageAnnotation(pageIdx, annot)
                                     imageAnnotationSelection = null
                                 },
+                                onRemoveNoteLink = { srcIdx, noteIdx -> viewModel.removeNoteLink(srcIdx, noteIdx) },
+                                onRemoveNotePage = { srcIdx, noteIdx -> viewModel.removeNotePage(srcIdx, noteIdx) },
                             )
                         }
                         AnimatedVisibility(
@@ -1183,6 +1186,7 @@ private fun PageContent(
     onStrokeSelectionChanged: (InkStrokeSelection?) -> Unit,
     onSelectionDragDelta: (Offset) -> Unit,
     onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit,
+    onCreateNotePage: (Int, android.graphics.RectF, String) -> Unit,
     onAddPageToToc: () -> Unit,
     onInsertPageBefore: () -> Unit,
     onInsertPageAfter: () -> Unit,
@@ -1197,6 +1201,8 @@ private fun PageContent(
     onCommitImageMove: (Int, PdfImageAnnotation, Offset, IntSize) -> Unit,
     onCommitImageResize: (Int, PdfImageAnnotation, ResizeHandle, Offset, IntSize) -> Unit,
     onDeleteImageAnnotation: (Int, PdfImageAnnotation) -> Unit,
+    onRemoveNoteLink: (Int, Int) -> Unit,
+    onRemoveNotePage: (Int, Int) -> Unit,
 ) {
     PdfPageBase(page = page, modifier = Modifier.fillMaxSize()) {
         PdfAnnotationLayer(
@@ -1236,6 +1242,7 @@ private fun PageContent(
                 onCopyInkStrokes = onCopyInkStrokes,
                 onPasteInkStrokes = { center -> onPasteInkStrokes(index, center) },
                 onRestyleInkStrokes = { strokes, color, thickness -> onRestyleInkStrokes(index, strokes, color, thickness) },
+                onCreateNotePage = { rect, qt -> onCreateNotePage(index, rect, qt) },
                 onAddPageToToc = onAddPageToToc,
                 onInsertPageBefore = onInsertPageBefore,
                 onInsertPageAfter = onInsertPageAfter,
@@ -1244,6 +1251,8 @@ private fun PageContent(
                 onCommitImageMove = { annot, delta, sz -> onCommitImageMove(index, annot, delta, sz) },
                 onCommitImageResize = { annot, handle, delta, sz -> onCommitImageResize(index, annot, handle, delta, sz) },
                 onDeleteImageAnnotation = { annot -> onDeleteImageAnnotation(index, annot) },
+                onRemoveNoteLink = { noteIdx -> onRemoveNoteLink(index, noteIdx) },
+                onRemoveNotePage = { noteIdx -> onRemoveNotePage(index, noteIdx) },
             ),
             modifier = Modifier.matchParentSize(),
         )

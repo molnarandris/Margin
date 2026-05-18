@@ -19,9 +19,18 @@ import com.tom_roush.pdfbox.pdmodel.common.PDStream
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDColor
 import com.tom_roush.pdfbox.pdmodel.graphics.color.PDDeviceRGB
 import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
+import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
+import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationTextMarkup
 import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationUnknown
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDBorderStyleDictionary
 import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionGoTo
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageXYZDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDNamedDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageFitWidthDestination
@@ -304,6 +313,155 @@ class PdfEditor(
         pdDoc.close()
     }
 
+    // ---- Note Pages ----
+
+    fun isNotePage(pdPage: PDPage): Boolean =
+        pdPage.cosObject.getBoolean(COSName.getPDFName("MarginNotePage"), false)
+
+    fun positionLabel(rectPR: android.graphics.RectF, pageW: Float, pageH: Float): String {
+        val cx = (rectPR.left + rectPR.right) / 2f
+        val cy = (rectPR.top + rectPR.bottom) / 2f
+        val vert  = if (cy < pageH / 3f) "upper" else if (cy > pageH * 2f / 3f) "lower" else "middle"
+        val horiz = if (cx < pageW / 3f) "left"  else if (cx > pageW * 2f / 3f) "right"  else "centre"
+        return "$vert $horiz"
+    }
+
+    suspend fun createNotePage(
+        uri: Uri,
+        sourcePageIndex: Int,
+        sourceRectPR: android.graphics.RectF,
+        sourceBitmap: android.graphics.Bitmap,
+        quotedText: String,
+        posLabel: String,
+        sourcePageDisplayNumber: Int,
+    ): Int = withContext(Dispatchers.IO) {
+        PdfRepository.fileWriteLockFor(uri).withLock {
+            val doc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+            val sourcePdPage = doc.getPage(sourcePageIndex)
+            val mediaBox = sourcePdPage.mediaBox
+            val pageW = mediaBox.width; val pageH = mediaBox.height
+
+            // Crop the source bitmap to the selected region.
+            // sourceRectPR is in native PDF-point units (nativeW × nativeH), Y=0 at top.
+            val bitmapW = sourceBitmap.width.toFloat()
+            val bitmapH = sourceBitmap.height.toFloat()
+            val nativeW = sourcePdPage.cropBox.width
+            val nativeH = sourcePdPage.cropBox.height
+            val cropLeft   = (sourceRectPR.left   / nativeW * bitmapW).toInt().coerceIn(0, sourceBitmap.width)
+            val cropTop    = (sourceRectPR.top    / nativeH * bitmapH).toInt().coerceIn(0, sourceBitmap.height)
+            val cropRight  = (sourceRectPR.right  / nativeW * bitmapW).toInt().coerceIn(0, sourceBitmap.width)
+            val cropBottom = (sourceRectPR.bottom / nativeH * bitmapH).toInt().coerceIn(0, sourceBitmap.height)
+            val excerptBitmap = android.graphics.Bitmap.createBitmap(
+                sourceBitmap, cropLeft, cropTop,
+                (cropRight - cropLeft).coerceAtLeast(1),
+                (cropBottom - cropTop).coerceAtLeast(1)
+            )
+
+            // Create and tag the note page
+            val notePageIndex = doc.numberOfPages
+            val notePage = PDPage(mediaBox)
+            doc.addPage(notePage)
+            notePage.cosObject.setBoolean(COSName.getPDFName("MarginNotePage"), true)
+
+            // Layout measurements (PDF Y=0 at bottom; we place header at top, image below)
+            val margin = 36f
+            val excerptMaxW = pageW - 2 * margin
+            val excerptMaxH = pageH * 0.35f
+            val imgAspect = excerptBitmap.width.toFloat() / excerptBitmap.height
+            val imgW: Float; val imgH: Float
+            if (imgAspect > excerptMaxW / excerptMaxH) {
+                imgW = excerptMaxW; imgH = excerptMaxW / imgAspect
+            } else {
+                imgH = excerptMaxH; imgW = excerptMaxH * imgAspect
+            }
+            val headerH = if (quotedText.isNotBlank()) 42f else 22f
+            val excerptY = pageH - margin - headerH - imgH
+            val dividerY = excerptY - 12f
+
+            // Draw content on the note page
+            val pdImage = LosslessFactory.createFromImage(doc, excerptBitmap)
+            PDPageContentStream(doc, notePage).use { cs ->
+                cs.beginText()
+                cs.setFont(PDType1Font.HELVETICA_BOLD, 11f)
+                cs.newLineAtOffset(margin, pageH - margin - 14f)
+                cs.showText("Note for page $sourcePageDisplayNumber - $posLabel")
+                cs.endText()
+
+                if (quotedText.isNotBlank()) {
+                    val truncated = if (quotedText.length > 120) quotedText.take(117) + "..." else quotedText
+                    cs.beginText()
+                    cs.setFont(PDType1Font.HELVETICA_OBLIQUE, 9f)
+                    cs.newLineAtOffset(margin, pageH - margin - 28f)
+                    cs.showText("$truncated")
+                    cs.endText()
+                }
+
+                cs.drawImage(pdImage, margin, excerptY, imgW, imgH)
+
+                cs.setLineWidth(0.5f)
+                cs.moveTo(margin, dividerY)
+                cs.lineTo(pageW - margin, dividerY)
+                cs.stroke()
+
+                cs.beginText()
+                cs.setFont(PDType1Font.HELVETICA, 9f)
+                cs.setNonStrokingColor(0.2f, 0.4f, 0.8f)
+                cs.newLineAtOffset(margin, dividerY - 14f)
+                cs.showText("<- Back to page $sourcePageDisplayNumber")
+                cs.endText()
+            }
+
+            // Back-link annotation on note page (GoTo source page)
+            // PDPageXYZDestination uses PDF coords (Y=0 at bottom)
+            val backDest = PDPageXYZDestination().apply {
+                page = sourcePdPage
+                left = ((sourceRectPR.left + sourceRectPR.right) / 2f).toInt()
+                top  = (pageH - (sourceRectPR.top + sourceRectPR.bottom) / 2f).toInt()
+                zoom = 0f
+            }
+            notePage.annotations.add(PDAnnotationLink().apply {
+                action = PDActionGoTo().apply { destination = backDest }
+                // PDRectangle(lowerLeftX, lowerLeftY, width, height)
+                rectangle = PDRectangle(margin, dividerY - 22f, 150f, 18f)
+                borderStyle = PDBorderStyleDictionary().apply {
+                    style = PDBorderStyleDictionary.STYLE_UNDERLINE; width = 0f
+                }
+            })
+
+            // Forward-link annotation on source page (GoTo note page)
+            // sourceRectPR: Y=0 at top → flip to PDF Y=0 at bottom
+            val fwdDest = PDPageFitWidthDestination().apply {
+                page = notePage; top = pageH.toInt()
+            }
+            val linkLowerLeftY = pageH - sourceRectPR.bottom
+            val linkHeight     = sourceRectPR.bottom - sourceRectPR.top
+            sourcePdPage.annotations.add(PDAnnotationLink().apply {
+                action = PDActionGoTo().apply { destination = fwdDest }
+                rectangle = PDRectangle(sourceRectPR.left, linkLowerLeftY, sourceRectPR.right - sourceRectPR.left, linkHeight)
+                color = PDColor(floatArrayOf(0.2f, 0.4f, 0.8f), PDDeviceRGB.INSTANCE)
+                borderStyle = PDBorderStyleDictionary().apply {
+                    style = PDBorderStyleDictionary.STYLE_SOLID; width = 1f
+                }
+                annotationName = "note-fwd"
+            })
+
+            // Add "Notes" TOC entry only when this is the first note page
+            val hadNotePagesBefore = (0 until notePageIndex).any { isNotePage(doc.getPage(it)) }
+            if (!hadNotePagesBefore) {
+                val existingOutline = extractOutline(doc)
+                writeOutlineToDoc(doc, existingOutline + OutlineItem("Notes", notePageIndex, level = 0))
+            }
+
+            val rounded = PdfRepository.roundToHalfHour(java.util.Calendar.getInstance())
+            doc.documentInformation.setModificationDate(rounded)
+            PdfRepository.writeDatesToXmp(doc, null, rounded)
+            application.contentResolver.openOutputStream(uri, "wt")!!.use { doc.save(it) }
+            doc.close()
+
+            notePageIndex
+        }
+    }
+
     // ---- Document Structure ----
 
     /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
@@ -461,6 +619,53 @@ class PdfEditor(
         }
     }
 
+    /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
+    suspend fun removeNoteLinkAnnotation(uri: Uri, sourcePageIndex: Int, notePageIndex: Int) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        removeNoteFwdLinks(pdDoc, sourcePageIndex, notePageIndex)
+        pdfRepository.save(pdDoc, uri)
+        pdDoc.close()
+    }
+
+    /** Must be called within renderMutex.withLock, with renderer/pfd already closed. */
+    suspend fun removeNotePageAndLink(uri: Uri, sourcePageIndex: Int, notePageIndex: Int) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        removeNoteFwdLinks(pdDoc, sourcePageIndex, notePageIndex)
+        pdDoc.removePage(notePageIndex)
+        pdfRepository.save(pdDoc, uri)
+        pdDoc.close()
+    }
+
+    private fun removeNoteFwdLinks(pdDoc: PDDocument, sourcePageIndex: Int, notePageIndex: Int) {
+        val srcPage = pdDoc.getPage(sourcePageIndex)
+        val toRemove = srcPage.annotations.filter { ann ->
+            if (ann.cosObject.getNameAsString(COSName.SUBTYPE) != "Link") return@filter false
+            if (ann.annotationName != "note-fwd") return@filter false
+            val dest = try {
+                (PDAnnotationLink(ann.cosObject).action as? PDActionGoTo)?.destination as? PDPageDestination
+            } catch (e: Exception) { null }
+            dest?.retrievePageNumber() == notePageIndex
+        }
+        srcPage.annotations.removeAll(toRemove)
+    }
+
+    fun extractNoteLinks(pdDoc: PDDocument, pageIndex: Int): List<Pair<RectF, Int>> {
+        return try {
+            val pdPage = pdDoc.getPage(pageIndex)
+            val pageH = pdPage.mediaBox.height
+            pdPage.annotations.mapNotNull { ann ->
+                if (ann.getCOSObject().getNameAsString(COSName.SUBTYPE) != "Link") return@mapNotNull null
+                if (ann.annotationName != "note-fwd") return@mapNotNull null
+                val r = ann.rectangle ?: return@mapNotNull null
+                val action = PDAnnotationLink(ann.cosObject).action as? PDActionGoTo ?: return@mapNotNull null
+                val dest = action.destination as? PDPageDestination ?: return@mapNotNull null
+                val notePageIndex = dest.retrievePageNumber()
+                if (notePageIndex < 0) return@mapNotNull null
+                Pair(RectF(r.lowerLeftX, pageH - r.upperRightY, r.upperRightX, pageH - r.lowerLeftY), notePageIndex)
+            }
+        } catch (e: Exception) { emptyList() }
+    }
+
     fun extractOutline(pdDoc: PDDocument): List<OutlineItem> {
         val result = mutableListOf<OutlineItem>()
         val root = pdDoc.documentCatalog.documentOutline ?: return result
@@ -491,21 +696,25 @@ class PdfEditor(
         }
     }
 
-    suspend fun writeOutlineToPdf(uri: Uri, items: List<OutlineItem>) {
-        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+    private fun writeOutlineToDoc(doc: PDDocument, items: List<OutlineItem>) {
         val root = PDDocumentOutline()
-        pdDoc.documentCatalog.documentOutline = root
+        doc.documentCatalog.documentOutline = root
         val stack = mutableListOf<PDOutlineNode>(root)
         for (item in items) {
             val node = PDOutlineItem()
             node.title = item.title
             val dest = PDPageFitWidthDestination()
-            dest.page = pdDoc.getPage(item.pageIndex)
+            dest.page = doc.getPage(item.pageIndex)
             node.destination = dest
             while (stack.size > item.level + 1) stack.removeLast()
             stack.last().addLast(node)
             stack.add(node)
         }
+    }
+
+    suspend fun writeOutlineToPdf(uri: Uri, items: List<OutlineItem>) {
+        val pdDoc = PDDocument.load(application.contentResolver.openInputStream(uri)!!)
+        writeOutlineToDoc(pdDoc, items)
         pdfRepository.save(pdDoc, uri)
         pdDoc.close()
     }

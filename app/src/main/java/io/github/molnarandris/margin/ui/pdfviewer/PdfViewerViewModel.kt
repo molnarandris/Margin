@@ -93,7 +93,8 @@ data class PdfPage(
     val nativeHeight: Int,
     val links: List<PdfLink>,
     val words: List<TextWord>,
-    val highlights: List<PdfHighlight>
+    val highlights: List<PdfHighlight>,
+    val noteLinks: List<Pair<RectF, Int>> = emptyList()  // bounds (PR space) → note page index
 )
 
 sealed class PdfViewerUiState {
@@ -1030,6 +1031,127 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // ── Note Pages ───────────────────────────────────────────────────────────
+
+    fun createNotePage(pageIndex: Int, sourceRectPR: android.graphics.RectF, quotedText: String) {
+        val state = _uiState.value as? PdfViewerUiState.Ready ?: return
+        val sourcePage = state.pages.getOrNull(pageIndex) ?: return
+        val uri = docUri ?: return
+        val label = pdfEditor.positionLabel(
+            sourceRectPR, sourcePage.nativeWidth.toFloat(), sourcePage.nativeHeight.toFloat()
+        )
+        flushPendingInkStrokes()
+        launchSave {
+            val app = getApplication<Application>()
+            val noteIdx = pdfEditor.createNotePage(
+                uri, pageIndex, sourceRectPR, sourcePage.bitmap, quotedText, label, pageIndex + 1
+            )
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close()
+                renderer = null; pfd = null
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd
+                val newRenderer = PdfRenderer(newPfd)
+                renderer = newRenderer
+                val notePdfPage = newRenderer.openPage(noteIdx).use { page ->
+                    val bitmap = Bitmap.createBitmap(
+                        (page.width * currentRenderScale).toInt(),
+                        (page.height * currentRenderScale).toInt(),
+                        Bitmap.Config.ARGB_8888
+                    )
+                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    val links = buildList {
+                        page.getLinkContents().forEach { add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
+                        page.getGotoLinks().forEach { dest ->
+                            add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
+                                dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
+                        }
+                    }
+                    PdfPage(bitmap, page.width, page.height, links, emptyList(), emptyList())
+                }
+                val sourceLinks = newRenderer.openPage(pageIndex).use { page ->
+                    buildList {
+                        page.getLinkContents().forEach { add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
+                        page.getGotoLinks().forEach { dest ->
+                            add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
+                                dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
+                        }
+                    }
+                }
+                val currentState = _uiState.value as? PdfViewerUiState.Ready ?: return@withLock
+                val newPages = currentState.pages.toMutableList()
+                newPages[pageIndex] = newPages[pageIndex].copy(
+                    links = sourceLinks,
+                    noteLinks = newPages[pageIndex].noteLinks + Pair(sourceRectPR, noteIdx)
+                )
+                newPages.add(notePdfPage)
+                withContext(Dispatchers.Main) {
+                    _uiState.value = currentState.copy(pages = newPages)
+                    _pendingScrollToPage.value = noteIdx
+                }
+            }
+        }
+    }
+
+    // ── Note Link Removal ────────────────────────────────────────────────────
+
+    fun removeNoteLink(sourcePageIndex: Int, notePageIndex: Int) {
+        _uiState.update { state ->
+            if (state !is PdfViewerUiState.Ready) return@update state
+            val newPages = state.pages.toMutableList()
+            val src = newPages[sourcePageIndex]
+            newPages[sourcePageIndex] = src.copy(
+                noteLinks = src.noteLinks.filter { (_, idx) -> idx != notePageIndex },
+                links = src.links.filter { link ->
+                    val t = link.target; !(t is LinkTarget.Goto && t.pageNumber == notePageIndex)
+                }
+            )
+            state.copy(pages = newPages)
+        }
+        launchSave {
+            val uri = docUri ?: return@launchSave
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close(); renderer = null; pfd = null
+                pdfEditor.removeNoteLinkAnnotation(uri, sourcePageIndex, notePageIndex)
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd; renderer = PdfRenderer(newPfd)
+            }
+        }
+    }
+
+    fun removeNotePage(sourcePageIndex: Int, notePageIndex: Int) {
+        val currentState = _uiState.value as? PdfViewerUiState.Ready ?: return
+        val newPages = currentState.pages.toMutableList()
+        newPages.removeAt(notePageIndex)
+        for (i in newPages.indices) {
+            val page = newPages[i]
+            val updatedNoteLinks = page.noteLinks.mapNotNull { (r, dest) ->
+                when { dest == notePageIndex -> null; dest > notePageIndex -> Pair(r, dest - 1); else -> Pair(r, dest) }
+            }
+            val updatedLinks = page.links.filter { link ->
+                val t = link.target; !(t is LinkTarget.Goto && t.pageNumber == notePageIndex)
+            }
+            if (updatedNoteLinks != page.noteLinks || updatedLinks != page.links)
+                newPages[i] = page.copy(noteLinks = updatedNoteLinks, links = updatedLinks)
+        }
+        _uiState.value = currentState.copy(pages = newPages)
+        _completedInkStrokes.update { map ->
+            map.entries.filter { it.key != notePageIndex }
+                .associate { (idx, strokes) -> if (idx > notePageIndex) idx - 1 to strokes else idx to strokes }
+        }
+        launchSave {
+            val uri = docUri ?: return@launchSave
+            val app = getApplication<Application>()
+            renderMutex.withLock {
+                renderer?.close(); pfd?.close(); renderer = null; pfd = null
+                pdfEditor.removeNotePageAndLink(uri, sourcePageIndex, notePageIndex)
+                val newPfd = app.contentResolver.openFileDescriptor(uri, "r") ?: return@withLock
+                pfd = newPfd; renderer = PdfRenderer(newPfd)
+            }
+        }
+    }
+
     // ── Image Annotations ────────────────────────────────────────────────────
 
     /** Insert a new image annotation on the given page, save to PDF, and return it. */
@@ -1361,12 +1483,15 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val pageCount = pages.size
 
-                // Extract all highlights first — fast, not coupled to word extraction
+                // Extract all highlights and note-page link regions — fast, not coupled to word extraction
                 val allHighlights = (0 until pageCount).map { i ->
                     pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
                 }
+                val allNoteLinks = (0 until pageCount).map { i ->
+                    pdfEditor.extractNoteLinks(pdDoc, i)
+                }
                 val pagesWithHighlights = pages.mapIndexed { i, page ->
-                    page.copy(highlights = allHighlights[i])
+                    page.copy(highlights = allHighlights[i], noteLinks = allNoteLinks[i])
                 }
                 withContext(Dispatchers.Main) {
                     _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects, people, arxivId)
@@ -1549,8 +1674,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 val allHighlights = (0 until pageCount).map { i ->
                     pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
                 }
+                val allNoteLinks2 = (0 until pageCount).map { i ->
+                    pdfEditor.extractNoteLinks(pdDoc, i)
+                }
                 val pagesWithHighlights = pages.mapIndexed { i, page ->
-                    page.copy(highlights = allHighlights[i])
+                    page.copy(highlights = allHighlights[i], noteLinks = allNoteLinks2[i])
                 }
                 withContext(Dispatchers.Main) {
                     _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects, people, arxivId)

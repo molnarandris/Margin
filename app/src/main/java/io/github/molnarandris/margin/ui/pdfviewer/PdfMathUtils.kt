@@ -168,6 +168,29 @@ internal fun convexHull(pts: List<Offset>): List<Offset> {
     return hull
 }
 
+internal fun isApproxRectangle(points: List<Offset>): Boolean {
+    if (points.size < 10) return false
+    val minX = points.minOf { it.x }; val maxX = points.maxOf { it.x }
+    val minY = points.minOf { it.y }; val maxY = points.maxOf { it.y }
+    val dx = maxX - minX; val dy = maxY - minY
+    val bboxDiag = sqrt(dx * dx + dy * dy)
+    val simplified = rdpSimplify(points, epsilon = bboxDiag * 0.04f)
+    if (simplified.size < 4) return false
+    var cornerCount = 0
+    for (i in simplified.indices) {
+        val prev = simplified[(i - 1 + simplified.size) % simplified.size]
+        val curr = simplified[i]
+        val next = simplified[(i + 1) % simplified.size]
+        val v1x = curr.x - prev.x; val v1y = curr.y - prev.y
+        val v2x = next.x - curr.x; val v2y = next.y - curr.y
+        val dot = v1x * v2x + v1y * v2y
+        val mag = sqrt(v1x * v1x + v1y * v1y) * sqrt(v2x * v2x + v2y * v2y)
+        if (mag == 0f) continue
+        if ((dot / mag).coerceIn(-1f, 1f) < 0.5f) cornerCount++
+    }
+    return cornerCount in 3..6
+}
+
 // Returns true if the drawn path is approximately closed (end ≈ start relative to bounding-box size).
 internal fun isApproxClosed(points: List<Offset>): Boolean {
     if (points.size < 20) return false
