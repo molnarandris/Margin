@@ -708,8 +708,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 (page.width * targetScale).toInt(),
                                 (page.height * targetScale).toInt(),
                                 Bitmap.Config.ARGB_8888
-                            )
-                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                             newPages[index] = newPages[index].copy(bitmap = bitmap)
                         }
                     }
@@ -1058,8 +1058,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                         (page.width * currentRenderScale).toInt(),
                         (page.height * currentRenderScale).toInt(),
                         Bitmap.Config.ARGB_8888
-                    )
-                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                     val links = buildList {
                         page.getLinkContents().forEach { add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
                         page.getGotoLinks().forEach { dest ->
@@ -1321,8 +1321,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 (page.width * scale).toInt(),
                 (page.height * scale).toInt(),
                 Bitmap.Config.ARGB_8888
-            )
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            ).also { it.eraseColor(android.graphics.Color.WHITE) }
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
 
             // Re-extract words and highlights only — ink stroke memory is authoritative
             val (words, highlights) = pdfEditor.loadPageData(uri, pageIndex, page.height.toFloat())
@@ -1411,8 +1411,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                     (page.width * 2f).toInt(),
                                     (page.height * 2f).toInt(),
                                     Bitmap.Config.ARGB_8888
-                                )
-                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                                 PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList())
                             } else {
                                 // Placeholder: real dimensions, small bitmap — replaced in background below
@@ -1470,8 +1470,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 (page.width * 2f).toInt(),
                                 (page.height * 2f).toInt(),
                                 Bitmap.Config.ARGB_8888
-                            )
-                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                             pages[index] = pages[index].copy(bitmap = bitmap, links = extractLinks(page))
                         }
                     }
@@ -1602,8 +1602,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                     (page.width * 2f).toInt(),
                                     (page.height * 2f).toInt(),
                                     Bitmap.Config.ARGB_8888
-                                )
-                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                                 PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList())
                             } else {
                                 PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
@@ -1658,8 +1658,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 (page.width * 2f).toInt(),
                                 (page.height * 2f).toInt(),
                                 Bitmap.Config.ARGB_8888
-                            )
-                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                             pages[index] = pages[index].copy(bitmap = bitmap, links = extractLinks(page))
                         }
                     }
