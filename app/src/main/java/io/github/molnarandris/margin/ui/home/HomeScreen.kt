@@ -39,7 +39,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -509,7 +508,7 @@ private fun ContentList(
                 pdf.authors.joinToString(" \u2022 ").takeIf { it.isNotBlank() }
             }
             val filename = relativePath(pdf.uri, rootUri)
-            val icon = if (pdf.type == PdfType.NOTE) Icons.Default.Description else Icons.Default.PictureAsPdf
+            val icon = if (pdf.type == PdfType.NOTE) Icons.Default.Create else Icons.Default.Description
             val q = searchQuery.trim().lowercase()
             val matchedPeople = if (q.isNotBlank() && pdf.type != PdfType.NOTE) pdf.people.filter { it.lowercase().contains(q) } else emptyList()
             val showArxiv = pdf.arxivId.isNotBlank() && (q.isBlank() || pdf.arxivId.lowercase().contains(q))
