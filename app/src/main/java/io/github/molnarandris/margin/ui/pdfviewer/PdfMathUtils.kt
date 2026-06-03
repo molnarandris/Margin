@@ -186,7 +186,8 @@ internal fun isApproxRectangle(points: List<Offset>): Boolean {
         val dot = v1x * v2x + v1y * v2y
         val mag = sqrt(v1x * v1x + v1y * v1y) * sqrt(v2x * v2x + v2y * v2y)
         if (mag == 0f) continue
-        if ((dot / mag).coerceIn(-1f, 1f) < 0.5f) cornerCount++
+        // Require a genuinely sharp corner (angle > ~73°); smooth ellipse curves stay below this.
+        if ((dot / mag).coerceIn(-1f, 1f) < 0.3f) cornerCount++
     }
     return cornerCount in 3..6
 }
