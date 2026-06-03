@@ -35,9 +35,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
@@ -338,7 +338,7 @@ private fun SplitFab(onImport: () -> Unit, onNewNote: () -> Unit) {
                 modifier = Modifier.size(56.dp).clickable(onClick = onImport),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Add, contentDescription = "Import PDF")
+                Icon(Icons.Default.Description, contentDescription = "Import PDF")
             }
             Box(
                 modifier = Modifier
@@ -350,7 +350,7 @@ private fun SplitFab(onImport: () -> Unit, onNewNote: () -> Unit) {
                 modifier = Modifier.size(56.dp).clickable(onClick = onNewNote),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Description, contentDescription = "New note")
+                Icon(Icons.Default.Create, contentDescription = "New note")
             }
         }
     }
@@ -481,6 +481,7 @@ private fun ContentList(
             title = pdf.title,
             authors = pdf.authors,
             people = pdf.people,
+            isNote = pdf.type == PdfType.NOTE,
             arxivId = pdf.arxivId,
             createdAt = pdf.createdAt,
             fileUri = pdf.uri,
