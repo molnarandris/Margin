@@ -1,6 +1,10 @@
 package io.github.molnarandris.margin.ui.pdfviewer
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.RectF
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -1034,6 +1038,24 @@ fun PdfViewerScreen(
                                     }
                                 },
                                 onCreateNotePage = { pageIdx, rect, qt -> viewModel.createNotePage(pageIdx, rect, qt) },
+                                onCopyPageRegion = { pageIdx, rectPR ->
+                                    val pg = pagesRef.value.getOrNull(pageIdx)
+                                    if (pg != null) coroutineScope.launch(Dispatchers.IO) {
+                                        val bmp = pg.bitmap
+                                        val scaleX = bmp.width  / pg.nativeWidth.toFloat()
+                                        val scaleY = bmp.height / pg.nativeHeight.toFloat()
+                                        val x = (rectPR.left    * scaleX).roundToInt().coerceIn(0, bmp.width  - 1)
+                                        val y = (rectPR.top     * scaleY).roundToInt().coerceIn(0, bmp.height - 1)
+                                        val w = (rectPR.width() * scaleX).roundToInt().coerceIn(1, bmp.width  - x)
+                                        val h = (rectPR.height()* scaleY).roundToInt().coerceIn(1, bmp.height - y)
+                                        val cropped = Bitmap.createBitmap(bmp, x, y, w, h)
+                                        val file = java.io.File(context.cacheDir, "copy_region.png")
+                                        file.outputStream().use { cropped.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                        val clip = ClipData.newUri(context.contentResolver, "PDF Region", uri)
+                                        (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
+                                    }
+                                },
                                 onAddPageToToc = {
                                     addTocTitle = "Page ${currentPage + 1}"
                                     addTocPage = currentPage
@@ -1188,6 +1210,7 @@ private fun PageContent(
     onSelectionDragDelta: (Offset) -> Unit,
     onCommitSelectionMove: (Int, List<InkStroke>, Offset, IntSize) -> Unit,
     onCreateNotePage: (Int, android.graphics.RectF, String) -> Unit,
+    onCopyPageRegion: (Int, android.graphics.RectF) -> Unit,
     onAddPageToToc: () -> Unit,
     onInsertPageBefore: () -> Unit,
     onInsertPageAfter: () -> Unit,
@@ -1244,6 +1267,7 @@ private fun PageContent(
                 onPasteInkStrokes = { center -> onPasteInkStrokes(index, center) },
                 onRestyleInkStrokes = { strokes, color, thickness -> onRestyleInkStrokes(index, strokes, color, thickness) },
                 onCreateNotePage = { rect, qt -> onCreateNotePage(index, rect, qt) },
+                onCopyPageRegion = { rect -> onCopyPageRegion(index, rect) },
                 onAddPageToToc = onAddPageToToc,
                 onInsertPageBefore = onInsertPageBefore,
                 onInsertPageAfter = onInsertPageAfter,

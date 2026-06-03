@@ -90,6 +90,11 @@ internal data class ImageAnnotationSelection(
     val activeHandle: ResizeHandle? = null,
 )
 
+internal data class RectSelection(
+    val pageIndex: Int,
+    val rectPx: Rect,
+)
+
 internal data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
 
 internal data class PdfPageState(
@@ -130,6 +135,7 @@ internal class PdfPageActions(
     val onPasteInkStrokes: (Offset) -> Unit,
     val onRestyleInkStrokes: (List<InkStroke>, StrokeColor?, StrokeThickness?) -> Unit,
     val onCreateNotePage: (android.graphics.RectF, String) -> Unit,
+    val onCopyPageRegion: (android.graphics.RectF) -> Unit,
     val onAddPageToToc: () -> Unit,
     val onInsertPageBefore: () -> Unit,
     val onInsertPageAfter: () -> Unit,
@@ -163,6 +169,9 @@ internal fun PdfAnnotationLayer(
     val selectionMenuSizeRef = rememberUpdatedState(selectionMenuSize)
     var imageMenuSize by remember { mutableStateOf(IntSize.Zero) }
     val imageMenuSizeRef = rememberUpdatedState(imageMenuSize)
+    var rectSelection by remember { mutableStateOf<RectSelection?>(null) }
+    var rectMenuSize by remember { mutableStateOf(IntSize.Zero) }
+    val rectMenuSizeRef = rememberUpdatedState(rectMenuSize)
     val inkStrokesRef = rememberUpdatedState(state.inkStrokes)
     val inkStrokeSelectionRef = rememberUpdatedState(state.inkStrokeSelection)
     val imageAnnotationsRef = rememberUpdatedState(state.imageAnnotations)
@@ -180,6 +189,74 @@ internal fun PdfAnnotationLayer(
                 lastDownWasStylus = down.type == PointerType.Stylus || down.type == PointerType.Eraser
                 val currentIndex = indexRef.value
                 val currentActions = actionsRef.value
+
+                // ── Handle active rect selection ──────────────────────────────────
+                val rectSel = rectSelection
+                if (rectSel != null && rectSel.pageIndex == currentIndex) {
+                    val handleRadiusPx = with(density) { 24.dp.toPx() }
+                    val r = rectSel.rectPx
+                    val corners = listOf(
+                        ResizeHandle.TOP_LEFT     to Offset(r.left,  r.top),
+                        ResizeHandle.TOP_RIGHT    to Offset(r.right, r.top),
+                        ResizeHandle.BOTTOM_LEFT  to Offset(r.left,  r.bottom),
+                        ResizeHandle.BOTTOM_RIGHT to Offset(r.right, r.bottom),
+                    )
+                    val hitHandle = corners.firstOrNull { (_, pt) ->
+                        (down.position - pt).getDistance() <= handleRadiusPx
+                    }?.first
+                    if (hitHandle != null) {
+                        down.consume()
+                        currentActions.onIsDraggingHandleChanged(true)
+                        var prevPos = down.position
+                        var totalDelta = Offset.Zero
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.find { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                change.consume()
+                                val delta = change.position - prevPos
+                                prevPos = change.position
+                                totalDelta += delta
+                                rectSelection = rectSel.copy(rectPx = applyRectResize(rectSel.rectPx, hitHandle, totalDelta))
+                            }
+                        } finally {
+                            currentActions.onIsDraggingHandleChanged(false)
+                        }
+                        return@awaitEachGesture
+                    } else if (r.contains(down.position)) {
+                        down.consume()
+                        currentActions.onIsDraggingHandleChanged(true)
+                        var prevPos = down.position
+                        var totalDelta = Offset.Zero
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.find { it.id == down.id } ?: break
+                                if (!change.pressed) break
+                                change.consume()
+                                val delta = change.position - prevPos
+                                prevPos = change.position
+                                totalDelta += delta
+                                rectSelection = rectSel.copy(rectPx = rectSel.rectPx.translate(totalDelta))
+                            }
+                        } finally {
+                            currentActions.onIsDraggingHandleChanged(false)
+                        }
+                        return@awaitEachGesture
+                    } else {
+                        val menuSz = rectMenuSizeRef.value
+                        val tappedRectMenu = if (menuSz != IntSize.Zero) {
+                            val gapPx = with(density) { 8.dp.roundToPx() }
+                            val mX = (r.center.x - menuSz.width / 2f).roundToInt()
+                                .coerceIn(0, (pageSize.width - menuSz.width).coerceAtLeast(0)).toFloat()
+                            val mY = (r.top - gapPx - menuSz.height).roundToInt().coerceAtLeast(0).toFloat()
+                            Rect(mX, mY, mX + menuSz.width, mY + menuSz.height).contains(down.position)
+                        } else false
+                        if (!tappedRectMenu) rectSelection = null
+                        return@awaitEachGesture
+                    }
+                }
 
                 // ── Handle active selection (both stylus and finger) ──────────────
                 val sel = inkStrokeSelectionRef.value
@@ -352,13 +429,10 @@ internal fun PdfAnnotationLayer(
                     if (isApproxRectangle(points)) {
                         val minX = points.minOf { it.x }; val maxX = points.maxOf { it.x }
                         val minY = points.minOf { it.y }; val maxY = points.maxOf { it.y }
-                        val rectPR = android.graphics.RectF(
-                            minX / pageSize.width  * page.nativeWidth,
-                            minY / pageSize.height * page.nativeHeight,
-                            maxX / pageSize.width  * page.nativeWidth,
-                            maxY / pageSize.height * page.nativeHeight
+                        rectSelection = RectSelection(
+                            pageIndex = currentIndex,
+                            rectPx = Rect(minX, minY, maxX, maxY)
                         )
-                        actionsRef.value.onCreateNotePage(rectPR, "")
                         return@awaitEachGesture
                     }
                     // ── Phase B: Compute selection ────────────────────────────────
@@ -781,6 +855,65 @@ internal fun PdfAnnotationLayer(
                 }
             }
         }
+        // ── Rect selection overlay ────────────────────────────────────────────
+        val activeRect = rectSelection?.takeIf { it.pageIndex == state.index }
+        if (activeRect != null) {
+            val r = activeRect.rectPx
+            val handleR = with(density) { 7.dp.toPx() }
+            Canvas(modifier = Modifier.matchParentSize()) {
+                drawRect(
+                    color = Color(0xFF00BCD4.toInt()),
+                    topLeft = Offset(r.left, r.top),
+                    size = Size(r.width, r.height),
+                    style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f))
+                )
+                listOf(
+                    Offset(r.left,  r.top),
+                    Offset(r.right, r.top),
+                    Offset(r.left,  r.bottom),
+                    Offset(r.right, r.bottom),
+                ).forEach { pt ->
+                    drawCircle(Color.White, handleR, pt)
+                    drawCircle(Color(0xFF00BCD4.toInt()), handleR, pt, style = Stroke(2.dp.toPx()))
+                }
+            }
+            with(density) {
+                val gapPx = 8.dp.roundToPx()
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            val menuX = (r.center.x - rectMenuSize.width / 2f).roundToInt()
+                                .coerceIn(0, (pageSize.width - rectMenuSize.width).coerceAtLeast(0))
+                            val menuY = (r.top - gapPx - rectMenuSize.height).roundToInt().coerceAtLeast(0)
+                            IntOffset(menuX, menuY)
+                        }
+                        .onSizeChanged { rectMenuSize = it }
+                ) {
+                    Card(
+                        elevation = CardDefaults.cardElevation(4.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 4.dp)) {
+                            IconButton(onClick = {
+                                val rectPR = rectToPdfSpace(activeRect.rectPx, pageSize, page)
+                                actions.onCopyPageRegion(rectPR)
+                                rectSelection = null
+                            }) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                            }
+                            TextButton(onClick = {
+                                val rectPR = rectToPdfSpace(activeRect.rectPx, pageSize, page)
+                                actions.onCreateNotePage(rectPR, "")
+                                rectSelection = null
+                            }) {
+                                Text("Create Excerpt")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         val inkStroke = currentInkStroke
         val lasso = lassoProgress
         if (inkStroke != null && inkStroke.size >= 2) {
@@ -1259,3 +1392,39 @@ private fun InsertPageIcon(before: Boolean) {
         drawLine(color = color, start = Offset(cx, cy - arm), end = Offset(cx, cy + arm), strokeWidth = 1.5.dp.toPx())
     }
 }
+
+private fun applyRectResize(r: Rect, handle: ResizeHandle, delta: Offset): Rect {
+    val minSize = 20f
+    return when (handle) {
+        ResizeHandle.TOP_LEFT     -> Rect(
+            (r.left  + delta.x).coerceAtMost(r.right  - minSize),
+            (r.top   + delta.y).coerceAtMost(r.bottom - minSize),
+            r.right, r.bottom
+        )
+        ResizeHandle.TOP_RIGHT    -> Rect(
+            r.left,
+            (r.top   + delta.y).coerceAtMost(r.bottom - minSize),
+            (r.right + delta.x).coerceAtLeast(r.left  + minSize),
+            r.bottom
+        )
+        ResizeHandle.BOTTOM_LEFT  -> Rect(
+            (r.left   + delta.x).coerceAtMost(r.right  - minSize),
+            r.top,
+            r.right,
+            (r.bottom + delta.y).coerceAtLeast(r.top   + minSize)
+        )
+        ResizeHandle.BOTTOM_RIGHT -> Rect(
+            r.left, r.top,
+            (r.right  + delta.x).coerceAtLeast(r.left  + minSize),
+            (r.bottom + delta.y).coerceAtLeast(r.top   + minSize)
+        )
+    }
+}
+
+private fun rectToPdfSpace(rectPx: Rect, pageSize: IntSize, page: PdfPage): android.graphics.RectF =
+    android.graphics.RectF(
+        rectPx.left   / pageSize.width  * page.nativeWidth,
+        rectPx.top    / pageSize.height * page.nativeHeight,
+        rectPx.right  / pageSize.width  * page.nativeWidth,
+        rectPx.bottom / pageSize.height * page.nativeHeight,
+    )
