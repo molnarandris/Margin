@@ -40,6 +40,7 @@ fun EditMetadataDialog(
     title: String,
     authors: List<String>,
     people: List<String>,
+    isNote: Boolean,
     arxivId: String = "",
     createdAt: Long,
     fileUri: Uri,
@@ -53,10 +54,13 @@ fun EditMetadataDialog(
     var authorValue by rememberSaveable(authors, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(authors.joinToString(", ")))
     }
-    var peopleText by rememberSaveable(people) { mutableStateOf(people.joinToString(", ")) }
+    var peopleValue by rememberSaveable(people, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(people.joinToString(", ")))
+    }
     var arxivText by rememberSaveable(arxivId) { mutableStateOf(arxivId) }
     var fileSize by remember { mutableStateOf<Long?>(null) }
     var authorFocused by remember { mutableStateOf(false) }
+    var peopleFocused by remember { mutableStateOf(false) }
 
     LaunchedEffect(fileUri) {
         fileSize = withContext(Dispatchers.IO) {
@@ -70,25 +74,41 @@ fun EditMetadataDialog(
     val textColor = MaterialTheme.colorScheme.onSurface
     val cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
 
-    // Find the comma-delimited token the cursor is sitting in.
-    val authorSuggestions = remember(authorValue, knownAuthors) {
-        val text = authorValue.text
-        val cursor = authorValue.selection.end.coerceIn(0, text.length)
+    fun suggestionsFor(value: TextFieldValue): List<String> {
+        val text = value.text
+        val cursor = value.selection.end.coerceIn(0, text.length)
         val prevComma = text.lastIndexOf(',', cursor - 1)
         val nextComma = text.indexOf(',', cursor)
         val tokenStart = if (prevComma == -1) 0 else prevComma + 1
         val tokenEnd = if (nextComma == -1) text.length else nextComma
         val currentToken = text.substring(tokenStart, tokenEnd).trim()
-
-        if (currentToken.isBlank()) return@remember emptyList()
-
+        if (currentToken.isBlank()) return emptyList()
         val otherSegments = (text.substring(0, tokenStart) + text.substring(tokenEnd))
             .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
-
-        knownAuthors
+        return knownAuthors
             .filter { it.contains(currentToken, ignoreCase = true) && it !in otherSegments }
             .take(5)
     }
+
+    fun applysuggestion(value: TextFieldValue, suggestion: String): TextFieldValue {
+        val text = value.text
+        val cursor = value.selection.end.coerceIn(0, text.length)
+        val prevComma = text.lastIndexOf(',', cursor - 1)
+        val nextComma = text.indexOf(',', cursor)
+        val tokenStart = if (prevComma == -1) 0 else prevComma + 1
+        val tokenEnd = if (nextComma == -1) text.length else nextComma
+        val rawToken = text.substring(tokenStart, tokenEnd)
+        val leadingSpace = if (rawToken.startsWith(" ")) " " else ""
+        val after = text.substring(tokenEnd)
+        val newText = text.substring(0, tokenStart) + leadingSpace + suggestion +
+            if (after.isBlank()) ", " else after
+        val newCursor = tokenStart + leadingSpace.length + suggestion.length +
+            if (after.isBlank()) 2 else 0
+        return TextFieldValue(newText, androidx.compose.ui.text.TextRange(newCursor))
+    }
+
+    val authorSuggestions = remember(authorValue, knownAuthors) { suggestionsFor(authorValue) }
+    val peopleSuggestions = remember(peopleValue, knownAuthors) { suggestionsFor(peopleValue) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -105,74 +125,76 @@ fun EditMetadataDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("Authors", style = labelStyle, color = labelColor)
-                Spacer(Modifier.height(2.dp))
-                BasicTextField(
-                    value = authorValue,
-                    onValueChange = { authorValue = it },
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
-                    cursorBrush = cursorBrush,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { authorFocused = it.isFocused },
-                    decorationBox = { innerTextField ->
-                        if (authorValue.text.isEmpty()) {
-                            Text(
-                                "Separate with commas",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = labelColor
-                            )
+                if (!isNote) {
+                    Text("Authors", style = labelStyle, color = labelColor)
+                    Spacer(Modifier.height(2.dp))
+                    BasicTextField(
+                        value = authorValue,
+                        onValueChange = { authorValue = it },
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                        cursorBrush = cursorBrush,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { authorFocused = it.isFocused },
+                        decorationBox = { innerTextField ->
+                            if (authorValue.text.isEmpty()) {
+                                Text(
+                                    "Separate with commas",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = labelColor
+                                )
+                            }
+                            innerTextField()
                         }
-                        innerTextField()
-                    }
-                )
-                if (authorFocused && authorSuggestions.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        items(authorSuggestions) { suggestion ->
-                            SuggestionChip(
-                                onClick = {
-                                    val text = authorValue.text
-                                    val cursor = authorValue.selection.end.coerceIn(0, text.length)
-                                    val prevComma = text.lastIndexOf(',', cursor - 1)
-                                    val nextComma = text.indexOf(',', cursor)
-                                    val tokenStart = if (prevComma == -1) 0 else prevComma + 1
-                                    val tokenEnd = if (nextComma == -1) text.length else nextComma
-                                    val rawToken = text.substring(tokenStart, tokenEnd)
-                                    val leadingSpace = if (rawToken.startsWith(" ")) " " else ""
-                                    val after = text.substring(tokenEnd)
-                                    val newText = text.substring(0, tokenStart) + leadingSpace + suggestion +
-                                        if (after.isBlank()) ", " else after
-                                    val newCursor = tokenStart + leadingSpace.length + suggestion.length +
-                                        if (after.isBlank()) 2 else 0
-                                    authorValue = TextFieldValue(newText, androidx.compose.ui.text.TextRange(newCursor))
-                                },
-                                label = { Text(suggestion) }
-                            )
+                    )
+                    if (authorFocused && authorSuggestions.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            items(authorSuggestions) { suggestion ->
+                                SuggestionChip(
+                                    onClick = { authorValue = applysuggestion(authorValue, suggestion) },
+                                    label = { Text(suggestion) }
+                                )
+                            }
                         }
                     }
+                    Spacer(Modifier.height(12.dp))
                 }
-                Spacer(Modifier.height(12.dp))
-                Text("People", style = labelStyle, color = labelColor)
-                Spacer(Modifier.height(2.dp))
-                BasicTextField(
-                    value = peopleText,
-                    onValueChange = { peopleText = it },
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
-                    cursorBrush = cursorBrush,
-                    modifier = Modifier.fillMaxWidth(),
-                    decorationBox = { innerTextField ->
-                        if (peopleText.isEmpty()) {
-                            Text(
-                                "Separate with commas",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = labelColor
-                            )
+                if (isNote) {
+                    Text("People", style = labelStyle, color = labelColor)
+                    Spacer(Modifier.height(2.dp))
+                    BasicTextField(
+                        value = peopleValue,
+                        onValueChange = { peopleValue = it },
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                        cursorBrush = cursorBrush,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { peopleFocused = it.isFocused },
+                        decorationBox = { innerTextField ->
+                            if (peopleValue.text.isEmpty()) {
+                                Text(
+                                    "Separate with commas",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = labelColor
+                                )
+                            }
+                            innerTextField()
                         }
-                        innerTextField()
+                    )
+                    if (peopleFocused && peopleSuggestions.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            items(peopleSuggestions) { suggestion ->
+                                SuggestionChip(
+                                    onClick = { peopleValue = applysuggestion(peopleValue, suggestion) },
+                                    label = { Text(suggestion) }
+                                )
+                            }
+                        }
                     }
-                )
-                Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(12.dp))
+                }
                 Text("arXiv ID", style = labelStyle, color = labelColor)
                 Spacer(Modifier.height(2.dp))
                 BasicTextField(
@@ -203,7 +225,7 @@ fun EditMetadataDialog(
         confirmButton = {
             TextButton(onClick = {
                 val parsedAuthors = authorValue.text.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                val parsedPeople = peopleText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                val parsedPeople = peopleValue.text.split(",").map { it.trim() }.filter { it.isNotBlank() }
                 onSave(titleText.trim(), parsedAuthors, parsedPeople, arxivText.trim())
             }) { Text("Save") }
         },

@@ -21,6 +21,9 @@ interface PdfMetadataDao {
     @Query("SELECT author FROM pdf_metadata WHERE author != ''")
     suspend fun getAllAuthors(): List<String>
 
+    @Query("SELECT people FROM pdf_metadata WHERE people != ''")
+    suspend fun getAllPeople(): List<String>
+
     @Query("UPDATE pdf_metadata SET lastOpened = :lastOpened WHERE uri = :uri")
     suspend fun updateLastOpened(uri: String, lastOpened: Long)
 }

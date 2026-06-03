@@ -594,8 +594,9 @@ class PdfRepository(private val context: Context) {
     }
 
     suspend fun getKnownAuthors(): List<String> = withContext(Dispatchers.IO) {
-        dao.getAllAuthors()
-            .flatMap { it.split(";") }
+        val fromAuthors = dao.getAllAuthors().flatMap { it.split(";") }
+        val fromPeople  = dao.getAllPeople().flatMap { it.split(",") }
+        (fromAuthors + fromPeople)
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()

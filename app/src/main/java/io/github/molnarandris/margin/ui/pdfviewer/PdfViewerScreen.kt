@@ -291,6 +291,7 @@ fun PdfViewerScreen(
                 title = pdfTitle,
                 authors = pdfAuthors,
                 people = pdfPeople,
+                isNote = pdfIsNote,
                 arxivId = pdfArxivId,
                 createdAt = pdfCreatedAt,
                 fileUri = docUri,
