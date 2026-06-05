@@ -95,6 +95,14 @@ internal data class RectSelection(
     val rectPx: Rect,
 )
 
+internal data class StraightLineDraft(
+    val pageIndex: Int,
+    val strokeId: Int,
+    val startPx: Offset,
+    val endPx: Offset,
+    val pageSize: IntSize,
+)
+
 internal data class DestinationHighlight(val pageIndex: Int, val x: Float, val y: Float)
 
 internal data class PdfPageState(
@@ -146,6 +154,7 @@ internal class PdfPageActions(
     val onDeleteImageAnnotation: (PdfImageAnnotation) -> Unit,
     val onRemoveNoteLink: (notePageIndex: Int) -> Unit,
     val onRemoveNotePage: (notePageIndex: Int) -> Unit,
+    val onReplaceInkStroke: (strokeId: Int, newStartPx: Offset, newEndPx: Offset, pageSize: IntSize) -> Int?,
 )
 
 @Composable
@@ -171,6 +180,8 @@ internal fun PdfAnnotationLayer(
     val imageMenuSizeRef = rememberUpdatedState(imageMenuSize)
     var rectSelection by remember { mutableStateOf<RectSelection?>(null) }
     var rectMenuSize by remember { mutableStateOf(IntSize.Zero) }
+    var straightLineDraft by remember { mutableStateOf<StraightLineDraft?>(null) }
+    var straightLineProgress by remember { mutableStateOf<Float?>(null) }
     val rectMenuSizeRef = rememberUpdatedState(rectMenuSize)
     val inkStrokesRef = rememberUpdatedState(state.inkStrokes)
     val inkStrokeSelectionRef = rememberUpdatedState(state.inkStrokeSelection)
@@ -189,6 +200,48 @@ internal fun PdfAnnotationLayer(
                 lastDownWasStylus = down.type == PointerType.Stylus || down.type == PointerType.Eraser
                 val currentIndex = indexRef.value
                 val currentActions = actionsRef.value
+
+                // ── Phase 0: StraightLineDraft endpoint handle drag ───────────────
+                val draft = straightLineDraft
+                if (draft != null && draft.pageIndex == currentIndex && down.type == PointerType.Stylus) {
+                    val handleR = with(density) { 24.dp.toPx() }
+                    val dStart = (down.position - draft.startPx).getDistance()
+                    val dEnd   = (down.position - draft.endPx).getDistance()
+                    val hitStart = dStart <= handleR
+                    val hitEnd   = dEnd <= handleR && (!hitStart || dEnd < dStart)
+                    if (hitStart || hitEnd) {
+                        down.consume()
+                        currentActions.onIsDraggingHandleChanged(true)
+                        var liveStart = draft.startPx
+                        var liveEnd   = draft.endPx
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val ch = event.changes.find { it.id == down.id } ?: break
+                                ch.consume()
+                                if (hitStart) liveStart = ch.position else liveEnd = ch.position
+                                val snapped = if (hitStart) snapToCardinal(liveEnd, liveStart)
+                                              else          snapToCardinal(liveStart, liveEnd)
+                                if (hitStart) liveStart = snapped else liveEnd = snapped
+                                currentInkStroke = listOf(liveStart, liveEnd)
+                                straightLineDraft = draft.copy(startPx = liveStart, endPx = liveEnd)
+                                if (!ch.pressed) break
+                            }
+                        } finally {
+                            currentActions.onIsDraggingHandleChanged(false)
+                            currentInkStroke = null
+                        }
+                        val newId = currentActions.onReplaceInkStroke(
+                            draft.strokeId, liveStart, liveEnd, draft.pageSize
+                        )
+                        straightLineDraft = if (newId != null)
+                            draft.copy(strokeId = newId, startPx = liveStart, endPx = liveEnd)
+                        else null
+                        return@awaitEachGesture
+                    } else {
+                        straightLineDraft = null
+                    }
+                }
 
                 // ── Handle active rect selection ──────────────────────────────────
                 val rectSel = rectSelection
@@ -390,6 +443,8 @@ internal fun PdfAnnotationLayer(
                 currentInkStroke = listOf(down.position)
                 var lassoClosedAt: Long? = null
                 var triggerLasso = false
+                var triggerStraightLine = false
+                var straightHoldAt: Long? = null
                 var lastEventPos = down.position
                 var lastEventTime = down.uptimeMillis
                 val recentSpeeds = ArrayDeque<Float>()
@@ -417,12 +472,27 @@ internal fun PdfAnnotationLayer(
                             triggerLasso = true
                             break
                         }
+                        straightHoldAt = null
+                        straightLineProgress = null
+                    } else if (!isApproxClosed(points) && isApproxStraightLine(points) && avgSpeed < 0.5f) {
+                        lassoClosedAt = null
+                        lassoProgress = null
+                        if (straightHoldAt == null) straightHoldAt = now
+                        val elapsed = now - straightHoldAt!!
+                        straightLineProgress = (elapsed / 700f).coerceIn(0f, 1f)
+                        if (elapsed >= 700L) {
+                            triggerStraightLine = true
+                            break
+                        }
                     } else {
                         lassoClosedAt = null
                         lassoProgress = null
+                        straightHoldAt = null
+                        straightLineProgress = null
                     }
                 }
                 lassoProgress = null
+                straightLineProgress = null
                 if (triggerLasso) currentInkStroke = null  // Clear for lasso; ink path clears after async
 
                 if (triggerLasso && pageSize != IntSize.Zero) {
@@ -447,7 +517,39 @@ internal fun PdfAnnotationLayer(
                     return@awaitEachGesture  // Never becomes an ink stroke
                 }
 
+                // ── Straight-line snap ────────────────────────────────────────────
+                if (triggerStraightLine && pageSize != IntSize.Zero) {
+                    val snapStart = points.first()
+                    var snapEnd = snapToCardinal(snapStart, points.last())
+                    currentInkStroke = listOf(snapStart, snapEnd)
+
+                    // Continue reading: user can reposition the end while still holding
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val ch = event.changes.find { it.id == down.id } ?: break
+                        if (!ch.pressed) break
+                        ch.consume()
+                        snapEnd = snapToCardinal(snapStart, ch.position)
+                        currentInkStroke = listOf(snapStart, snapEnd)
+                    }
+
+                    val capturedPageSize = pageSize
+                    val addedId = currentActions.onAddInkAnnotation(
+                        listOf(snapStart, snapEnd), capturedPageSize.width, capturedPageSize.height
+                    )
+                    currentInkStroke = null
+                    straightLineDraft = StraightLineDraft(
+                        pageIndex = currentIndex,
+                        strokeId  = addedId,
+                        startPx   = snapStart,
+                        endPx     = snapEnd,
+                        pageSize  = capturedPageSize,
+                    )
+                    return@awaitEachGesture
+                }
+
                 // ── Normal stroke / scribble logic ────────────────────────────────
+                straightLineDraft = null
                 if (pageSize != IntSize.Zero) {
                     val capturedPoints = if (points.size < 2) listOf(points[0], points[0]) else points.toList()
                     val capturedPageStrokes = inkStrokesRef.value
@@ -914,14 +1016,40 @@ internal fun PdfAnnotationLayer(
             }
         }
 
+        // ── StraightLineDraft endpoint handles ────────────────────────────────
+        val activeDraft = straightLineDraft?.takeIf { it.pageIndex == state.index }
+        if (activeDraft != null) {
+            val handleR = with(density) { 7.dp.toPx() }
+            Canvas(modifier = Modifier.matchParentSize()) {
+                listOf(activeDraft.startPx, activeDraft.endPx).forEach { pt ->
+                    drawCircle(Color.White, handleR, pt)
+                    drawCircle(Color(0xFF00BCD4.toInt()), handleR, pt, style = Stroke(2.dp.toPx()))
+                }
+            }
+        }
+
         val inkStroke = currentInkStroke
         val lasso = lassoProgress
+        val slProg = straightLineProgress
         if (inkStroke != null && inkStroke.size >= 2) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val baseStrokePx = size.width / page.nativeWidth
                 val c = state.penColor.composeColor
                 val w = baseStrokePx * state.penThickness.multiplier
-                if (inkStroke.first() == inkStroke.last()) {
+                if (slProg != null && slProg > 0f) {
+                    // Countdown: faded original stroke + dashed candidate line with growing solid segment
+                    drawPath(catmullRomPath(inkStroke), color = c.copy(alpha = 0.3f),
+                        style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                    val candidate = snapToCardinal(inkStroke.first(), inkStroke.last())
+                    drawLine(c, inkStroke.first(), candidate, strokeWidth = w,
+                        cap = StrokeCap.Round,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f))
+                    val progEnd = Offset(
+                        inkStroke.first().x + (candidate.x - inkStroke.first().x) * slProg,
+                        inkStroke.first().y + (candidate.y - inkStroke.first().y) * slProg,
+                    )
+                    drawLine(c, inkStroke.first(), progEnd, strokeWidth = w, cap = StrokeCap.Round)
+                } else if (inkStroke.first() == inkStroke.last()) {
                     drawCircle(c, radius = w / 2f, center = inkStroke.first())
                 } else if (lasso == null || lasso <= 0f) {
                     drawPath(catmullRomPath(inkStroke), color = c,

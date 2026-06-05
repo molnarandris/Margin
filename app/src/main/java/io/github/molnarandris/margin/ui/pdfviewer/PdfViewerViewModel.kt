@@ -1007,6 +1007,22 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun replaceInkStroke(
+        pageIndex: Int,
+        originalStrokeId: Int,
+        newStartNorm: Offset,
+        newEndNorm: Offset,
+    ): Int? {
+        val original = _completedInkStrokes.value[pageIndex]
+            ?.firstOrNull { it.id == originalStrokeId } ?: return null
+        val newStroke = original.copy(
+            id = nextStrokeId++,
+            points = listOf(newStartNorm, newEndNorm),
+        )
+        moveInkStrokes(pageIndex, listOf(original), listOf(newStroke))
+        return newStroke.id
+    }
+
     fun copyInkStrokes(strokes: List<InkStroke>) {
         _inkClipboard.value = strokes
     }

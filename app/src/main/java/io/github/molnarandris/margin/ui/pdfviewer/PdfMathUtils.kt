@@ -204,6 +204,38 @@ internal fun isApproxClosed(points: List<Offset>): Boolean {
     return sqrt(dx * dx + dy * dy) < bboxDiag * 0.30f
 }
 
+internal fun isApproxStraightLine(points: List<Offset>): Boolean {
+    if (points.size < 2) return false
+    val first = points.first(); val last = points.last()
+    val dx = last.x - first.x; val dy = last.y - first.y
+    val lineLen = sqrt(dx * dx + dy * dy)
+    if (lineLen < 40f) return false
+    val lenSq = lineLen * lineLen
+    var maxDev = 0f
+    for (pt in points) {
+        val ex = pt.x - first.x; val ey = pt.y - first.y
+        val dist = if (lenSq == 0f) sqrt(ex * ex + ey * ey)
+        else {
+            val t = (ex * dx + ey * dy) / lenSq
+            val cx = first.x + t * dx; val cy = first.y + t * dy
+            sqrt((pt.x - cx) * (pt.x - cx) + (pt.y - cy) * (pt.y - cy))
+        }
+        if (dist > maxDev) maxDev = dist
+    }
+    return maxDev < lineLen * 0.05f
+}
+
+// Snaps `end` to horizontal or vertical relative to `start` if within 2° of those axes.
+internal fun snapToCardinal(start: Offset, end: Offset): Offset {
+    val dx = end.x - start.x; val dy = end.y - start.y
+    val ax = kotlin.math.abs(dx); val ay = kotlin.math.abs(dy)
+    return when {
+        ay > 0f && ax / ay > 28.636f -> Offset(end.x, start.y)
+        ax > 0f && ay / ax > 28.636f -> Offset(start.x, end.y)
+        else -> end
+    }
+}
+
 // Ray-casting point-in-polygon test (all in the same coordinate space).
 internal fun pointInPolygon(pt: Offset, poly: List<Offset>): Boolean {
     var inside = false

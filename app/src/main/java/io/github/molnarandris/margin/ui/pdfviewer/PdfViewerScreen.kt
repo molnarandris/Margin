@@ -1120,6 +1120,9 @@ fun PdfViewerScreen(
                                 },
                                 onRemoveNoteLink = { srcIdx, noteIdx -> viewModel.removeNoteLink(srcIdx, noteIdx) },
                                 onRemoveNotePage = { srcIdx, noteIdx -> viewModel.removeNotePage(srcIdx, noteIdx) },
+                                onReplaceInkStroke = { pageIdx, strokeId, startNorm, endNorm ->
+                                    viewModel.replaceInkStroke(pageIdx, strokeId, startNorm, endNorm)
+                                },
                             )
                         }
                         AnimatedVisibility(
@@ -1227,6 +1230,7 @@ private fun PageContent(
     onDeleteImageAnnotation: (Int, PdfImageAnnotation) -> Unit,
     onRemoveNoteLink: (Int, Int) -> Unit,
     onRemoveNotePage: (Int, Int) -> Unit,
+    onReplaceInkStroke: (Int, Int, Offset, Offset) -> Int?,
 ) {
     PdfPageBase(page = page, modifier = Modifier.fillMaxSize()) {
         PdfAnnotationLayer(
@@ -1278,6 +1282,11 @@ private fun PageContent(
                 onDeleteImageAnnotation = { annot -> onDeleteImageAnnotation(index, annot) },
                 onRemoveNoteLink = { noteIdx -> onRemoveNoteLink(index, noteIdx) },
                 onRemoveNotePage = { noteIdx -> onRemoveNotePage(index, noteIdx) },
+                onReplaceInkStroke = { strokeId, startPx, endPx, pgSize ->
+                    val startNorm = Offset(startPx.x / pgSize.width, startPx.y / pgSize.height)
+                    val endNorm   = Offset(endPx.x   / pgSize.width, endPx.y   / pgSize.height)
+                    onReplaceInkStroke(index, strokeId, startNorm, endNorm)
+                },
             ),
             modifier = Modifier.matchParentSize(),
         )
