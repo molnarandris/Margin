@@ -362,6 +362,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private var scratchpadPageDates: MutableList<Calendar?>? = null
     private var scratchpadDatesDirty: Boolean = false
     private val isScratchpad: Boolean get() = loadedFileName == "scratchpad"
+    private var isNoteDocument = false
     var firstVisiblePageIndex: Int = 0
 
     private val _pendingScrollToPage = MutableStateFlow(-1)
@@ -487,7 +488,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 nativeHeight = refPage.nativeHeight,
                 links = emptyList(),
                 words = emptyList(),
-                highlights = emptyList()
+                highlights = emptyList(),
+                isNotePage = isNoteDocument
             )
             newPages.add(effectiveInsert.coerceIn(0, newPages.size), blankPage)
             _uiState.value = currentState.copy(pages = newPages)
@@ -1418,10 +1420,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     return links
                 }
 
+                isNoteDocument = isNote
+
                 val firstIndex = initialPage.coerceIn(0, newRenderer.pageCount - 1)
 
                 val notePageFlags = (0 until newRenderer.pageCount).map { i ->
-                    pdfEditor.isNotePage(pdDoc.getPage(i))
+                    isNote || pdfEditor.isNotePage(pdDoc.getPage(i))
                 }
 
                 val pages: MutableList<PdfPage> = renderMutex.withLock {
@@ -1613,10 +1617,12 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                     return links
                 }
 
+                isNoteDocument = isNote
+
                 val firstIndex = initialPage.coerceIn(0, newRenderer.pageCount - 1)
 
                 val notePageFlags2 = (0 until newRenderer.pageCount).map { i ->
-                    pdfEditor.isNotePage(pdDoc.getPage(i))
+                    isNote || pdfEditor.isNotePage(pdDoc.getPage(i))
                 }
 
                 val pages: MutableList<PdfPage> = renderMutex.withLock {
