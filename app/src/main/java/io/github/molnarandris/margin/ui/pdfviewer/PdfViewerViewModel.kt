@@ -94,7 +94,8 @@ data class PdfPage(
     val links: List<PdfLink>,
     val words: List<TextWord>,
     val highlights: List<PdfHighlight>,
-    val noteLinks: List<Pair<RectF, Int>> = emptyList()  // bounds (PR space) → note page index
+    val noteLinks: List<Pair<RectF, Int>> = emptyList(),  // bounds (PR space) → note page index
+    val isNotePage: Boolean = false
 )
 
 sealed class PdfViewerUiState {
@@ -1083,7 +1084,7 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                 dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
                         }
                     }
-                    PdfPage(bitmap, page.width, page.height, links, emptyList(), emptyList())
+                    PdfPage(bitmap, page.width, page.height, links, emptyList(), emptyList(), isNotePage = true)
                 }
                 val sourceLinks = newRenderer.openPage(pageIndex).use { page ->
                     buildList {
@@ -1419,6 +1420,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val firstIndex = initialPage.coerceIn(0, newRenderer.pageCount - 1)
 
+                val notePageFlags = (0 until newRenderer.pageCount).map { i ->
+                    pdfEditor.isNotePage(pdDoc.getPage(i))
+                }
+
                 val pages: MutableList<PdfPage> = renderMutex.withLock {
                     (0 until newRenderer.pageCount).map { index ->
                         newRenderer.openPage(index).use { page ->
@@ -1429,11 +1434,11 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                     Bitmap.Config.ARGB_8888
                                 ).also { it.eraseColor(android.graphics.Color.WHITE) }
                                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                                PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList())
+                                PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList(), isNotePage = notePageFlags[index])
                             } else {
                                 // Placeholder: real dimensions, small bitmap — replaced in background below
                                 PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
-                                    page.width, page.height, emptyList(), emptyList(), emptyList())
+                                    page.width, page.height, emptyList(), emptyList(), emptyList(), isNotePage = notePageFlags[index])
                             }
                         }
                     }.toMutableList()
@@ -1610,6 +1615,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val firstIndex = initialPage.coerceIn(0, newRenderer.pageCount - 1)
 
+                val notePageFlags2 = (0 until newRenderer.pageCount).map { i ->
+                    pdfEditor.isNotePage(pdDoc.getPage(i))
+                }
+
                 val pages: MutableList<PdfPage> = renderMutex.withLock {
                     (0 until newRenderer.pageCount).map { index ->
                         newRenderer.openPage(index).use { page ->
@@ -1620,10 +1629,10 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                                     Bitmap.Config.ARGB_8888
                                 ).also { it.eraseColor(android.graphics.Color.WHITE) }
                                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                                PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList())
+                                PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList(), isNotePage = notePageFlags2[index])
                             } else {
                                 PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
-                                    page.width, page.height, emptyList(), emptyList(), emptyList())
+                                    page.width, page.height, emptyList(), emptyList(), emptyList(), isNotePage = notePageFlags2[index])
                             }
                         }
                     }.toMutableList()

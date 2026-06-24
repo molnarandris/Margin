@@ -240,6 +240,7 @@ internal fun PdfAnnotationLayer(
                         return@awaitEachGesture
                     } else {
                         straightLineDraft = null
+                        return@awaitEachGesture
                     }
                 }
 
