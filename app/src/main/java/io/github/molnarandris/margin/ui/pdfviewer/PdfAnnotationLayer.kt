@@ -207,29 +207,43 @@ internal fun PdfAnnotationLayer(
                     val handleR = with(density) { 24.dp.toPx() }
                     val dStart = (down.position - draft.startPx).getDistance()
                     val dEnd   = (down.position - draft.endPx).getDistance()
+                    val midPx  = (draft.startPx + draft.endPx) / 2f
+                    val dMid   = (down.position - midPx).getDistance()
                     val hitStart = dStart <= handleR
                     val hitEnd   = dEnd <= handleR && (!hitStart || dEnd < dStart)
-                    if (hitStart || hitEnd) {
+                    val hitMid   = dMid <= handleR && !hitStart && !hitEnd
+                    if (hitStart || hitEnd || hitMid) {
                         down.consume()
                         currentActions.onIsDraggingHandleChanged(true)
                         var liveStart = draft.startPx
                         var liveEnd   = draft.endPx
+                        var prevPos   = down.position
                         try {
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
                                 val ch = event.changes.find { it.id == down.id } ?: break
                                 ch.consume()
-                                if (hitStart) liveStart = ch.position else liveEnd = ch.position
-                                val snapped = if (hitStart) snapToCardinal(liveEnd, liveStart)
-                                              else          snapToCardinal(liveStart, liveEnd)
-                                if (hitStart) liveStart = snapped else liveEnd = snapped
-                                currentInkStroke = listOf(liveStart, liveEnd)
+                                when {
+                                    hitStart -> {
+                                        liveStart = ch.position
+                                        liveStart = snapToCardinal(liveEnd, liveStart)
+                                    }
+                                    hitEnd -> {
+                                        liveEnd = ch.position
+                                        liveEnd = snapToCardinal(liveStart, liveEnd)
+                                    }
+                                    hitMid -> {
+                                        val delta = ch.position - prevPos
+                                        liveStart += delta
+                                        liveEnd   += delta
+                                    }
+                                }
+                                prevPos = ch.position
                                 straightLineDraft = draft.copy(startPx = liveStart, endPx = liveEnd)
                                 if (!ch.pressed) break
                             }
                         } finally {
                             currentActions.onIsDraggingHandleChanged(false)
-                            currentInkStroke = null
                         }
                         val newId = currentActions.onReplaceInkStroke(
                             draft.strokeId, liveStart, liveEnd, draft.pageSize
@@ -851,6 +865,7 @@ internal fun PdfAnnotationLayer(
         val activeSel = state.inkStrokeSelection?.takeIf { it.pageIndex == state.index }
         val selIds = activeSel?.strokes?.map { it.id }?.toSet() ?: emptySet()
         val dragPx = activeSel?.dragOffsetPx ?: Offset.Zero
+        val draftForRender = straightLineDraft?.takeIf { it.pageIndex == state.index }
         if (state.inkStrokes.isNotEmpty()) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val baseStrokePx = size.width / page.nativeWidth
@@ -859,18 +874,24 @@ internal fun PdfAnnotationLayer(
                     if (pts.size < 2) continue
                     val c = stroke.color.composeColor
                     val w = baseStrokePx * stroke.thickness.multiplier
-                    val dxNorm = if (stroke.id in selIds) dragPx.x / size.width  else 0f
-                    val dyNorm = if (stroke.id in selIds) dragPx.y / size.height else 0f
-                    val x0 = (pts.first().x + dxNorm) * size.width
-                    val y0 = (pts.first().y + dyNorm) * size.height
-                    if (pts.first() == pts.last()) {
-                        drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
+                    val cap = if (stroke.roundCap) StrokeCap.Round else StrokeCap.Butt
+                    val join = if (stroke.roundCap) StrokeJoin.Round else StrokeJoin.Miter
+                    if (stroke.id == draftForRender?.strokeId) {
+                        drawPath(
+                            catmullRomPath(listOf(draftForRender.startPx, draftForRender.endPx)),
+                            color = c, style = Stroke(width = w, cap = cap, join = join)
+                        )
                     } else {
-                        val pxPts = pts.map { Offset((it.x + dxNorm) * size.width, (it.y + dyNorm) * size.height) }
-                        val path = catmullRomPath(pxPts)
-                        val cap = if (stroke.roundCap) StrokeCap.Round else StrokeCap.Butt
-                        val join = if (stroke.roundCap) StrokeJoin.Round else StrokeJoin.Miter
-                        drawPath(path, color = c, style = Stroke(width = w, cap = cap, join = join))
+                        val dxNorm = if (stroke.id in selIds) dragPx.x / size.width  else 0f
+                        val dyNorm = if (stroke.id in selIds) dragPx.y / size.height else 0f
+                        val x0 = (pts.first().x + dxNorm) * size.width
+                        val y0 = (pts.first().y + dyNorm) * size.height
+                        if (pts.first() == pts.last()) {
+                            drawCircle(c, radius = w / 2f, center = Offset(x0, y0))
+                        } else {
+                            val pxPts = pts.map { Offset((it.x + dxNorm) * size.width, (it.y + dyNorm) * size.height) }
+                            drawPath(catmullRomPath(pxPts), color = c, style = Stroke(width = w, cap = cap, join = join))
+                        }
                     }
                 }
             }
@@ -1026,6 +1047,9 @@ internal fun PdfAnnotationLayer(
                     drawCircle(Color.White, handleR, pt)
                     drawCircle(Color(0xFF00BCD4.toInt()), handleR, pt, style = Stroke(2.dp.toPx()))
                 }
+                val midPt = (activeDraft.startPx + activeDraft.endPx) / 2f
+                drawCircle(Color.White, handleR, midPt)
+                drawCircle(Color(0xFF00BCD4.toInt()), handleR, midPt, style = Stroke(2.dp.toPx()))
             }
         }
 
@@ -1037,20 +1061,7 @@ internal fun PdfAnnotationLayer(
                 val baseStrokePx = size.width / page.nativeWidth
                 val c = state.penColor.composeColor
                 val w = baseStrokePx * state.penThickness.multiplier
-                if (slProg != null && slProg > 0f) {
-                    // Countdown: faded original stroke + dashed candidate line with growing solid segment
-                    drawPath(catmullRomPath(inkStroke), color = c.copy(alpha = 0.3f),
-                        style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round))
-                    val candidate = snapToCardinal(inkStroke.first(), inkStroke.last())
-                    drawLine(c, inkStroke.first(), candidate, strokeWidth = w,
-                        cap = StrokeCap.Round,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f))
-                    val progEnd = Offset(
-                        inkStroke.first().x + (candidate.x - inkStroke.first().x) * slProg,
-                        inkStroke.first().y + (candidate.y - inkStroke.first().y) * slProg,
-                    )
-                    drawLine(c, inkStroke.first(), progEnd, strokeWidth = w, cap = StrokeCap.Round)
-                } else if (inkStroke.first() == inkStroke.last()) {
+                if (inkStroke.first() == inkStroke.last()) {
                     drawCircle(c, radius = w / 2f, center = inkStroke.first())
                 } else if (lasso == null || lasso <= 0f) {
                     drawPath(catmullRomPath(inkStroke), color = c,
