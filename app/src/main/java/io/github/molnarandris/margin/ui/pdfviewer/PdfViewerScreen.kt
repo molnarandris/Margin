@@ -149,13 +149,7 @@ fun PdfViewerScreen(
     val searchFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    val pdfTitle      by viewModel.displayTitle.collectAsState()
-    val pdfAuthors    by viewModel.displayAuthors.collectAsState()
-    val pdfProjects   by viewModel.displayProjects.collectAsState()
-    val pdfPeople     by viewModel.displayPeople.collectAsState()
-    val pdfIsNote     by viewModel.displayIsNote.collectAsState()
-    val pdfArxivId    by viewModel.displayArxivId.collectAsState()
-    val pdfCreatedAt  by viewModel.displayCreatedAt.collectAsState()
+    val meta by viewModel.documentMeta.collectAsState()
     var isEditDialogVisible by remember { mutableStateOf(false) }
     var noteDialogTarget by remember { mutableStateOf<PdfHighlight?>(null) }
     var noteDialogText   by remember { mutableStateOf("") }
@@ -270,17 +264,17 @@ fun PdfViewerScreen(
         }
         if (docUri != null) {
             EditMetadataDialog(
-                title = pdfTitle,
-                authors = pdfAuthors,
-                people = pdfPeople,
-                isNote = pdfIsNote,
-                arxivId = pdfArxivId,
-                createdAt = pdfCreatedAt,
+                title = meta.title,
+                authors = meta.authors,
+                people = meta.people,
+                isNote = meta.isNote,
+                arxivId = meta.arxivId,
+                createdAt = meta.createdAt,
                 fileUri = docUri,
                 rootUri = dirUri,
                 knownAuthors = knownAuthors,
                 onSave = { newTitle, newAuthors, newPeople, newArxivId ->
-                    viewModel.setMetadata(newTitle, newAuthors, pdfProjects, newPeople, newArxivId)
+                    viewModel.setMetadata(newTitle, newAuthors, meta.projects, newPeople, newArxivId)
                     isEditDialogVisible = false
                 },
                 onDismiss = { isEditDialogVisible = false }
@@ -400,10 +394,10 @@ fun PdfViewerScreen(
                 searchQuery = searchQuery,
                 searchFocusRequester = searchFocusRequester,
                 searchState = searchState,
-                pdfTitle = pdfTitle,
-                pdfAuthors = pdfAuthors,
-                pdfPeople = pdfPeople,
-                pdfIsNote = pdfIsNote,
+                pdfTitle = meta.title,
+                pdfAuthors = meta.authors,
+                pdfPeople = meta.people,
+                pdfIsNote = meta.isNote,
                 previousDocParams = previousDocParams,
                 totalPages = (uiState as? PdfViewerUiState.Ready)?.pages?.size ?: 0,
                 currentPage = currentPage,

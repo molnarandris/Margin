@@ -13,7 +13,6 @@ import androidx.lifecycle.viewModelScope
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,75 +31,14 @@ import io.github.molnarandris.margin.data.PreferencesRepository
 import java.io.File
 import java.util.Calendar
 
-sealed class LinkTarget {
-    data class Url(val uri: Uri) : LinkTarget()
-    data class Goto(val pageNumber: Int, val x: Float, val y: Float, val zoom: Float) : LinkTarget()
-}
-
-data class PdfLink(val bounds: List<RectF>, val target: LinkTarget)
-
-data class PdfHighlight(
-    val pageIndex: Int,
-    val bounds: List<RectF>,    // PR space; one rect per line
-    val annotationIndex: Int,   // index in PDPage.annotations list
-    val note: String? = null    // PDF Contents field; null = no annotation
-)
-
-data class SearchMatch(
-    val pageIndex: Int,
-    val wordBounds: List<RectF>   // PR space, one rect per matching word
-)
-
-data class SearchState(
-    val matches: List<SearchMatch> = emptyList(),
-    val currentIndex: Int = -1    // -1 = no results
-)
-
-data class OutlineItem(val title: String, val pageIndex: Int, val level: Int, val hasChildren: Boolean = false)
-
-enum class StrokeColor(val composeColor: Color, val pdfRgb: FloatArray) {
-    BLACK(Color.Black,               floatArrayOf(0f, 0f, 0f)),
-    RED  (Color(0xFFE53935.toInt()), floatArrayOf(0.898f, 0.224f, 0.208f)),
-    GREEN(Color(0xFF43A047.toInt()), floatArrayOf(0.263f, 0.627f, 0.278f)),
-    BLUE (Color(0xFF1E88E5.toInt()), floatArrayOf(0.118f, 0.533f, 0.898f))
-}
-
-enum class StrokeThickness(val multiplier: Float) {
-    THIN(0.5f), MEDIUM(1.0f), THICK(2.5f)
-}
-
-data class InkStroke(
-    val id: Int,
-    val points: List<Offset>,
-    val color: StrokeColor = StrokeColor.BLACK,
-    val thickness: StrokeThickness = StrokeThickness.MEDIUM,
-    val roundCap: Boolean = false,
-    val timestamp: Long = 0L   // ms epoch; 0 = loaded from PDF (already grouped)
-)
-
-data class PdfImageAnnotation(
-    val id: Int,
-    val bitmap: Bitmap,
-    val rectNorm: android.graphics.RectF, // left, top, right, bottom in 0–1 page coords (y=0 at top)
-    val annotationIndex: Int = -1,        // -1 = not yet persisted to PDF
-)
-
-data class PdfPage(
-    val bitmap: Bitmap,
-    val nativeWidth: Int,
-    val nativeHeight: Int,
-    val links: List<PdfLink>,
-    val words: List<TextWord>,
-    val highlights: List<PdfHighlight>,
-    val noteLinks: List<Pair<RectF, Int>> = emptyList(),  // bounds (PR space) → note page index
-    val isNotePage: Boolean = false
-)
-
-sealed class PdfViewerUiState {
-    object Loading : PdfViewerUiState()
-    data class Ready(val pages: List<PdfPage>, val title: String = "", val authors: List<String> = emptyList(), val projects: List<String> = emptyList(), val people: List<String> = emptyList(), val arxivId: String = "") : PdfViewerUiState()
-    data class Error(val message: String) : PdfViewerUiState()
-    data class CorruptedWithBackup(val backupFile: File, val uri: Uri) : PdfViewerUiState()
+private fun PdfRenderer.Page.extractLinks(): List<PdfLink> {
+    val links = mutableListOf<PdfLink>()
+    getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
+    getGotoLinks().forEach { dest ->
+        links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
+            dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
+    }
+    return links
 }
 
 class PdfViewerViewModel(application: Application) : AndroidViewModel(application) {
@@ -108,26 +46,8 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Loading)
     val uiState: StateFlow<PdfViewerUiState> = _uiState.asStateFlow()
 
-    private val _displayTitle = MutableStateFlow("")
-    val displayTitle: StateFlow<String> = _displayTitle.asStateFlow()
-
-    private val _displayAuthors = MutableStateFlow<List<String>>(emptyList())
-    val displayAuthors: StateFlow<List<String>> = _displayAuthors.asStateFlow()
-
-    private val _displayProjects = MutableStateFlow<List<String>>(emptyList())
-    val displayProjects: StateFlow<List<String>> = _displayProjects.asStateFlow()
-
-    private val _displayPeople = MutableStateFlow<List<String>>(emptyList())
-    val displayPeople: StateFlow<List<String>> = _displayPeople.asStateFlow()
-
-    private val _displayArxivId = MutableStateFlow("")
-    val displayArxivId: StateFlow<String> = _displayArxivId.asStateFlow()
-
-    private val _displayCreatedAt = MutableStateFlow(0L)
-    val displayCreatedAt: StateFlow<Long> = _displayCreatedAt.asStateFlow()
-
-    private val _displayIsNote = MutableStateFlow(false)
-    val displayIsNote: StateFlow<Boolean> = _displayIsNote.asStateFlow()
+    private val _documentMeta = MutableStateFlow(DocumentMeta())
+    val documentMeta: StateFlow<DocumentMeta> = _documentMeta.asStateFlow()
 
     private val _searchState = MutableStateFlow(SearchState())
     val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
@@ -1247,397 +1167,207 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private suspend fun renderPages(dirUri: Uri, docId: String, fileName: String, initialPage: Int = 0): Unit =
+    private suspend fun renderPages(dirUri: Uri, docId: String, fileName: String, initialPage: Int = 0) {
+        val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
+        docUri = uri
+        try {
+            val cr = getApplication<Application>().contentResolver
+            val (newPfd, pdDoc) = PdfRepository.fileWriteLockFor(uri).withLock {
+                val pfd = cr.openFileDescriptor(uri, "r") ?: throw java.io.IOException("Could not open file")
+                pfd to PDDocument.load(cr.openInputStream(uri)!!)
+            }
+            coordinator.open(newPfd)
+            renderPagesCore(fileName, initialPage, pdDoc)
+        } catch (e: Exception) {
+            val backup = pdfRepository.backupFileFor(uri)
+            withContext(Dispatchers.Main) {
+                _uiState.value = if (backup.exists())
+                    PdfViewerUiState.CorruptedWithBackup(backup, uri)
+                else
+                    PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
+            }
+        }
+    }
+
+    private suspend fun renderPagesFromUri(uri: Uri, fileName: String, initialPage: Int = 0) {
+        docUri = uri
+        try {
+            val cr = getApplication<Application>().contentResolver
+            val newPfd = cr.openFileDescriptor(uri, "r") ?: throw java.io.IOException("Could not open file")
+            val pdDoc = PDDocument.load(cr.openInputStream(uri)!!)
+            coordinator.open(newPfd)
+            renderPagesCore(fileName, initialPage, pdDoc)
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
+            }
+        }
+    }
+
+    private suspend fun renderPagesCore(fileName: String, initialPage: Int, pdDoc: PDDocument): Unit =
         withContext(Dispatchers.IO) {
-            try {
-                val app = getApplication<Application>()
-                PDFBoxResourceLoader.init(app)
+            PDFBoxResourceLoader.init(getApplication())
+            currentRenderScale = 2f
+            val title    = pdDoc.documentInformation?.title?.takeIf { it.isNotBlank() } ?: ""
+            val authors  = pdDoc.documentInformation?.author
+                ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
+                ?: emptyList()
+            val projects = PdfRepository.readProjectsFromXmp(pdDoc)
+            val people   = PdfRepository.readPeopleFromXmp(pdDoc)
+            val arxivId  = PdfRepository.readArxivFromXmp(pdDoc)
+            val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
+            val isNote   = pdDoc.documentInformation?.creator == "Margin"
+            withContext(Dispatchers.Main) {
+                _documentMeta.value = DocumentMeta(
+                    title = title.ifBlank { fileName },
+                    authors = authors,
+                    projects = projects,
+                    people = people,
+                    arxivId = arxivId,
+                    createdAt = createdAt,
+                    isNote = isNote
+                )
+            }
 
-                val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
-                this@PdfViewerViewModel.docUri = uri
+            val outline = pdfEditor.extractOutline(pdDoc)
+            withContext(Dispatchers.Main) { _outline.value = outline }
 
-                // Hold the file write lock while opening the file to prevent reading a
-                // partially-written file if a background save is in progress.
-                val (newPfd, pdDoc) = PdfRepository.fileWriteLockFor(uri).withLock {
-                    val pfd = app.contentResolver.openFileDescriptor(uri, "r")
-                        ?: run {
-                            withContext(Dispatchers.Main) {
-                                _uiState.value = PdfViewerUiState.Error("Could not open file")
-                            }
-                            return@withLock null
-                        }
-                    pfd to PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-                } ?: return@withContext
+            isNoteDocument = isNote
 
-                coordinator.open(newPfd)
-                currentRenderScale = 2f
-                val title    = pdDoc.documentInformation?.title?.takeIf { it.isNotBlank() } ?: ""
-                val authors  = pdDoc.documentInformation?.author
-                    ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
-                    ?: emptyList()
-                val projects = PdfRepository.readProjectsFromXmp(pdDoc)
-                val people   = PdfRepository.readPeopleFromXmp(pdDoc)
-                val arxivId  = PdfRepository.readArxivFromXmp(pdDoc)
-                val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
-                val isNote   = pdDoc.documentInformation?.creator == "Margin"
-                withContext(Dispatchers.Main) {
-                    _displayTitle.value = title.ifBlank { fileName }
-                    _displayAuthors.value = authors
-                    _displayProjects.value = projects
-                    _displayPeople.value = people
-                    _displayArxivId.value = arxivId
-                    _displayCreatedAt.value = createdAt
-                    _displayIsNote.value = isNote
-                }
+            val firstIndex = initialPage.coerceIn(0, coordinator.pageCount - 1)
 
-                // Extract outline (fast — just traverses bookmark tree)
-                val outline = pdfEditor.extractOutline(pdDoc)
-                withContext(Dispatchers.Main) { _outline.value = outline }
+            val notePageFlags = (0 until coordinator.pageCount).map { i ->
+                isNote || pdfEditor.isNotePage(pdDoc.getPage(i))
+            }
 
-                // --- PHASE 1: render initial page immediately, placeholders for the rest ---
-                fun extractLinks(page: PdfRenderer.Page): List<PdfLink> {
-                    val links = mutableListOf<PdfLink>()
-                    page.getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
-                    page.getGotoLinks().forEach { dest ->
-                        links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
-                            dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
-                    }
-                    return links
-                }
-
-                isNoteDocument = isNote
-
-                val firstIndex = initialPage.coerceIn(0, coordinator.pageCount - 1)
-
-                val notePageFlags = (0 until coordinator.pageCount).map { i ->
-                    isNote || pdfEditor.isNotePage(pdDoc.getPage(i))
-                }
-
-                val pages = mutableListOf<PdfPage>()
-                coordinator.withRenderer { r ->
-                    for (index in 0 until r.pageCount) {
-                        r.openPage(index).use { page ->
-                            if (index == firstIndex) {
-                                val bitmap = Bitmap.createBitmap(
-                                    (page.width * 2f).toInt(),
-                                    (page.height * 2f).toInt(),
-                                    Bitmap.Config.ARGB_8888
-                                ).also { it.eraseColor(android.graphics.Color.WHITE) }
-                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                                pages.add(PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList(), isNotePage = notePageFlags[index]))
-                            } else {
-                                // Placeholder: real dimensions, small bitmap — replaced in background below
-                                pages.add(PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
-                                    page.width, page.height, emptyList(), emptyList(), emptyList(), isNotePage = notePageFlags[index]))
-                            }
-                        }
-                    }
-                }
-
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects, people, arxivId)
-                    if (initialPage > 0) _pendingScrollToPage.value = initialPage
-                }
-
-                // Show highlights, ink strokes, and image annotations on the initial page before rendering the rest
-                val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
-                val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
-                val firstImageAnnotations = pdfEditor.extractImageAnnotations(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
-                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty() || firstImageAnnotations.isNotEmpty()) {
-                    if (firstHighlights.isNotEmpty())
-                        pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
-                    val state = _uiState.value as? PdfViewerUiState.Ready
-                    if (state != null) {
-                        withContext(Dispatchers.Main) {
-                            _uiState.value = state.copy(pages = pages.toList())
-                            if (firstInkStrokes.isNotEmpty()) {
-                                _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
-                                val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
-                                if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
-                            }
-                            if (firstImageAnnotations.isNotEmpty()) {
-                                _imageAnnotations.value = mapOf(firstIndex to firstImageAnnotations)
-                                val maxId = firstImageAnnotations.maxOfOrNull { it.id } ?: -1
-                                if (maxId >= nextImageAnnotationId) nextImageAnnotationId = maxId + 1
-                            }
-                        }
-                    }
-                }
-
-                // Render remaining pages in background, outward from firstIndex so nearby pages load first
-                val remainingIndices = buildList {
-                    var lo = firstIndex - 1
-                    var hi = firstIndex + 1
-                    while (lo >= 0 || hi < pages.size) {
-                        if (hi < pages.size) add(hi++)
-                        if (lo >= 0) add(lo--)
-                    }
-                }
-                for (index in remainingIndices) {
-                    coordinator.withRenderer { r ->
-                        r.openPage(index).use { page ->
+            val pages = mutableListOf<PdfPage>()
+            coordinator.withRenderer { r ->
+                for (index in 0 until r.pageCount) {
+                    r.openPage(index).use { page ->
+                        if (index == firstIndex) {
                             val bitmap = Bitmap.createBitmap(
                                 (page.width * 2f).toInt(),
                                 (page.height * 2f).toInt(),
                                 Bitmap.Config.ARGB_8888
                             ).also { it.eraseColor(android.graphics.Color.WHITE) }
                             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                            pages[index] = pages[index].copy(bitmap = bitmap, links = extractLinks(page))
+                            pages.add(PdfPage(bitmap, page.width, page.height, page.extractLinks(), emptyList(), emptyList(), isNotePage = notePageFlags[index]))
+                        } else {
+                            pages.add(PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
+                                page.width, page.height, emptyList(), emptyList(), emptyList(), isNotePage = notePageFlags[index]))
                         }
-                    }
-                    val state = _uiState.value as? PdfViewerUiState.Ready ?: continue
-                    withContext(Dispatchers.Main) {
-                        _uiState.value = state.copy(pages = pages.toList())
-                    }
-                }
-
-                val pageCount = pages.size
-
-                // Extract all highlights and note-page link regions — fast, not coupled to word extraction
-                val allHighlights = (0 until pageCount).map { i ->
-                    pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
-                }
-                val allNoteLinks = (0 until pageCount).map { i ->
-                    pdfEditor.extractNoteLinks(pdDoc, i)
-                }
-                val pagesWithHighlights = pages.mapIndexed { i, page ->
-                    page.copy(highlights = allHighlights[i], noteLinks = allNoteLinks[i])
-                }
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects, people, arxivId)
-                }
-
-                // Extract ink strokes from saved annotations and populate overlay
-                val allInkStrokes = (0 until pageCount).associate { i ->
-                    i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
-                }.filter { it.value.isNotEmpty() }
-                // Extract image annotations
-                val allImageAnnotations = (0 until pageCount).associate { i ->
-                    i to pdfEditor.extractImageAnnotations(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
-                }.filter { it.value.isNotEmpty() }
-                withContext(Dispatchers.Main) {
-                    _completedInkStrokes.value = allInkStrokes
-                    val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
-                    if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
-                    _imageAnnotations.value = allImageAnnotations
-                    val maxImgId = allImageAnnotations.values.flatten().maxOfOrNull { it.id } ?: -1
-                    if (maxImgId >= nextImageAnnotationId) nextImageAnnotationId = maxImgId + 1
-                }
-
-                // Extract words (slow) and emit final state
-                val allWords = pdfEditor.extractAllWords(pdDoc, pageCount)
-                pdDoc.close()
-
-                val enrichedPages = pagesWithHighlights.mapIndexed { i, page ->
-                    page.copy(words = allWords[i])
-                }
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(enrichedPages, title, authors)
-                }
-            } catch (e: Exception) {
-                val uri = DocumentsContract.buildDocumentUriUsingTree(dirUri, docId)
-                val backup = pdfRepository.backupFileFor(uri)
-                withContext(Dispatchers.Main) {
-                    _uiState.value = if (backup.exists()) {
-                        PdfViewerUiState.CorruptedWithBackup(backup, uri)
-                    } else {
-                        PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
                     }
                 }
             }
-        }
 
-    private suspend fun renderPagesFromUri(uri: Uri, fileName: String, initialPage: Int = 0): Unit =
-        withContext(Dispatchers.IO) {
-            try {
-                val app = getApplication<Application>()
-                PDFBoxResourceLoader.init(app)
+            withContext(Dispatchers.Main) {
+                _uiState.value = PdfViewerUiState.Ready(pages)
+                if (initialPage > 0) _pendingScrollToPage.value = initialPage
+            }
 
-                this@PdfViewerViewModel.docUri = uri
-
-                val newPfd = app.contentResolver.openFileDescriptor(uri, "r")
-                    ?: run {
-                        withContext(Dispatchers.Main) {
-                            _uiState.value = PdfViewerUiState.Error("Could not open file")
-                        }
-                        return@withContext
-                    }
-                val pdDoc = PDDocument.load(app.contentResolver.openInputStream(uri)!!)
-
-                coordinator.open(newPfd)
-                currentRenderScale = 2f
-                val title    = pdDoc.documentInformation?.title?.takeIf { it.isNotBlank() } ?: ""
-                val authors  = pdDoc.documentInformation?.author
-                    ?.split(";")?.map { it.trim() }?.filter { it.isNotBlank() }
-                    ?: emptyList()
-                val projects = PdfRepository.readProjectsFromXmp(pdDoc)
-                val people   = PdfRepository.readPeopleFromXmp(pdDoc)
-                val arxivId  = PdfRepository.readArxivFromXmp(pdDoc)
-                val createdAt = pdDoc.documentInformation?.creationDate?.timeInMillis ?: 0L
-                val isNote   = pdDoc.documentInformation?.creator == "Margin"
-                withContext(Dispatchers.Main) {
-                    _displayTitle.value = title.ifBlank { fileName }
-                    _displayAuthors.value = authors
-                    _displayProjects.value = projects
-                    _displayPeople.value = people
-                    _displayArxivId.value = arxivId
-                    _displayCreatedAt.value = createdAt
-                    _displayIsNote.value = isNote
-                }
-
-                val outline = pdfEditor.extractOutline(pdDoc)
-                withContext(Dispatchers.Main) { _outline.value = outline }
-
-                fun extractLinks(page: PdfRenderer.Page): List<PdfLink> {
-                    val links = mutableListOf<PdfLink>()
-                    page.getLinkContents().forEach { links.add(PdfLink(it.bounds, LinkTarget.Url(it.uri))) }
-                    page.getGotoLinks().forEach { dest ->
-                        links.add(PdfLink(dest.bounds, LinkTarget.Goto(dest.destination.pageNumber,
-                            dest.destination.xCoordinate, dest.destination.yCoordinate, dest.destination.zoom)))
-                    }
-                    return links
-                }
-
-                isNoteDocument = isNote
-
-                val firstIndex = initialPage.coerceIn(0, coordinator.pageCount - 1)
-
-                val notePageFlags2 = (0 until coordinator.pageCount).map { i ->
-                    isNote || pdfEditor.isNotePage(pdDoc.getPage(i))
-                }
-
-                val pages = mutableListOf<PdfPage>()
-                coordinator.withRenderer { r ->
-                    for (index in 0 until r.pageCount) {
-                        r.openPage(index).use { page ->
-                            if (index == firstIndex) {
-                                val bitmap = Bitmap.createBitmap(
-                                    (page.width * 2f).toInt(),
-                                    (page.height * 2f).toInt(),
-                                    Bitmap.Config.ARGB_8888
-                                ).also { it.eraseColor(android.graphics.Color.WHITE) }
-                                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                                pages.add(PdfPage(bitmap, page.width, page.height, extractLinks(page), emptyList(), emptyList(), isNotePage = notePageFlags2[index]))
-                            } else {
-                                pages.add(PdfPage(Bitmap.createBitmap(8, 10, Bitmap.Config.ARGB_8888),
-                                    page.width, page.height, emptyList(), emptyList(), emptyList(), isNotePage = notePageFlags2[index]))
-                            }
-                        }
-                    }
-                }
-
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pages, title, authors, projects, people, arxivId)
-                    if (initialPage > 0) _pendingScrollToPage.value = initialPage
-                }
-
-                val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
-                val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
-                val firstImageAnnotations2 = pdfEditor.extractImageAnnotations(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
-                if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty() || firstImageAnnotations2.isNotEmpty()) {
-                    if (firstHighlights.isNotEmpty())
-                        pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
-                    val state = _uiState.value as? PdfViewerUiState.Ready
-                    if (state != null) {
-                        withContext(Dispatchers.Main) {
-                            _uiState.value = state.copy(pages = pages.toList())
-                            if (firstInkStrokes.isNotEmpty()) {
-                                _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
-                                val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
-                                if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
-                            }
-                            if (firstImageAnnotations2.isNotEmpty()) {
-                                _imageAnnotations.value = mapOf(firstIndex to firstImageAnnotations2)
-                                val maxId = firstImageAnnotations2.maxOfOrNull { it.id } ?: -1
-                                if (maxId >= nextImageAnnotationId) nextImageAnnotationId = maxId + 1
-                            }
-                        }
-                    }
-                }
-
-                val remainingIndices = buildList {
-                    var lo = firstIndex - 1
-                    var hi = firstIndex + 1
-                    while (lo >= 0 || hi < pages.size) {
-                        if (hi < pages.size) add(hi++)
-                        if (lo >= 0) add(lo--)
-                    }
-                }
-                for (index in remainingIndices) {
-                    coordinator.withRenderer { r ->
-                        r.openPage(index).use { page ->
-                            val bitmap = Bitmap.createBitmap(
-                                (page.width * 2f).toInt(),
-                                (page.height * 2f).toInt(),
-                                Bitmap.Config.ARGB_8888
-                            ).also { it.eraseColor(android.graphics.Color.WHITE) }
-                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                            pages[index] = pages[index].copy(bitmap = bitmap, links = extractLinks(page))
-                        }
-                    }
-                    val state = _uiState.value as? PdfViewerUiState.Ready ?: continue
+            val firstHighlights = pdfEditor.extractHighlights(pdDoc, firstIndex, pages[firstIndex].nativeHeight.toFloat())
+            val firstInkStrokes = pdfEditor.extractInkStrokes(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
+            val firstImageAnnotations = pdfEditor.extractImageAnnotations(pdDoc, firstIndex, pages[firstIndex].nativeWidth.toFloat(), pages[firstIndex].nativeHeight.toFloat())
+            if (firstHighlights.isNotEmpty() || firstInkStrokes.isNotEmpty() || firstImageAnnotations.isNotEmpty()) {
+                if (firstHighlights.isNotEmpty())
+                    pages[firstIndex] = pages[firstIndex].copy(highlights = firstHighlights)
+                val state = _uiState.value as? PdfViewerUiState.Ready
+                if (state != null) {
                     withContext(Dispatchers.Main) {
                         _uiState.value = state.copy(pages = pages.toList())
+                        if (firstInkStrokes.isNotEmpty()) {
+                            _completedInkStrokes.value = mapOf(firstIndex to firstInkStrokes)
+                            val maxId = firstInkStrokes.maxOfOrNull { it.id } ?: -1
+                            if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                        }
+                        if (firstImageAnnotations.isNotEmpty()) {
+                            _imageAnnotations.value = mapOf(firstIndex to firstImageAnnotations)
+                            val maxId = firstImageAnnotations.maxOfOrNull { it.id } ?: -1
+                            if (maxId >= nextImageAnnotationId) nextImageAnnotationId = maxId + 1
+                        }
                     }
                 }
+            }
 
-                val pageCount = pages.size
-
-                val allHighlights = (0 until pageCount).map { i ->
-                    pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
+            val remainingIndices = buildList {
+                var lo = firstIndex - 1
+                var hi = firstIndex + 1
+                while (lo >= 0 || hi < pages.size) {
+                    if (hi < pages.size) add(hi++)
+                    if (lo >= 0) add(lo--)
                 }
-                val allNoteLinks2 = (0 until pageCount).map { i ->
-                    pdfEditor.extractNoteLinks(pdDoc, i)
+            }
+            for (index in remainingIndices) {
+                coordinator.withRenderer { r ->
+                    r.openPage(index).use { page ->
+                        val bitmap = Bitmap.createBitmap(
+                            (page.width * 2f).toInt(),
+                            (page.height * 2f).toInt(),
+                            Bitmap.Config.ARGB_8888
+                        ).also { it.eraseColor(android.graphics.Color.WHITE) }
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+                        pages[index] = pages[index].copy(bitmap = bitmap, links = page.extractLinks())
+                    }
                 }
-                val pagesWithHighlights = pages.mapIndexed { i, page ->
-                    page.copy(highlights = allHighlights[i], noteLinks = allNoteLinks2[i])
-                }
+                val state = _uiState.value as? PdfViewerUiState.Ready ?: continue
                 withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights, title, authors, projects, people, arxivId)
+                    _uiState.value = state.copy(pages = pages.toList())
                 }
+            }
 
-                val allInkStrokes = (0 until pageCount).associate { i ->
-                    i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
-                }.filter { it.value.isNotEmpty() }
-                val allImageAnnotations = (0 until pageCount).associate { i ->
-                    i to pdfEditor.extractImageAnnotations(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
-                }.filter { it.value.isNotEmpty() }
-                withContext(Dispatchers.Main) {
-                    _completedInkStrokes.value = allInkStrokes
-                    val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
-                    if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
-                    _imageAnnotations.value = allImageAnnotations
-                    val maxImgId = allImageAnnotations.values.flatten().maxOfOrNull { it.id } ?: -1
-                    if (maxImgId >= nextImageAnnotationId) nextImageAnnotationId = maxImgId + 1
-                }
+            val pageCount = pages.size
 
-                val allWords = pdfEditor.extractAllWords(pdDoc, pageCount)
-                pdDoc.close()
+            val allHighlights = (0 until pageCount).map { i ->
+                pdfEditor.extractHighlights(pdDoc, i, pages[i].nativeHeight.toFloat())
+            }
+            val allNoteLinks = (0 until pageCount).map { i ->
+                pdfEditor.extractNoteLinks(pdDoc, i)
+            }
+            val pagesWithHighlights = pages.mapIndexed { i, page ->
+                page.copy(highlights = allHighlights[i], noteLinks = allNoteLinks[i])
+            }
+            withContext(Dispatchers.Main) {
+                _uiState.value = PdfViewerUiState.Ready(pagesWithHighlights)
+            }
 
-                val enrichedPages = pagesWithHighlights.mapIndexed { i, page ->
-                    page.copy(words = allWords[i])
-                }
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Ready(enrichedPages, title, authors)
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to render PDF")
-                }
+            val allInkStrokes = (0 until pageCount).associate { i ->
+                i to pdfEditor.extractInkStrokes(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+            }.filter { it.value.isNotEmpty() }
+            val allImageAnnotations = (0 until pageCount).associate { i ->
+                i to pdfEditor.extractImageAnnotations(pdDoc, i, pages[i].nativeWidth.toFloat(), pages[i].nativeHeight.toFloat())
+            }.filter { it.value.isNotEmpty() }
+            withContext(Dispatchers.Main) {
+                _completedInkStrokes.value = allInkStrokes
+                val maxId = allInkStrokes.values.flatten().maxOfOrNull { it.id } ?: -1
+                if (maxId >= nextStrokeId) nextStrokeId = maxId + 1
+                _imageAnnotations.value = allImageAnnotations
+                val maxImgId = allImageAnnotations.values.flatten().maxOfOrNull { it.id } ?: -1
+                if (maxImgId >= nextImageAnnotationId) nextImageAnnotationId = maxImgId + 1
+            }
+
+            val allWords = pdfEditor.extractAllWords(pdDoc, pageCount)
+            pdDoc.close()
+
+            val enrichedPages = pagesWithHighlights.mapIndexed { i, page ->
+                page.copy(words = allWords[i])
+            }
+            withContext(Dispatchers.Main) {
+                _uiState.value = PdfViewerUiState.Ready(enrichedPages)
             }
         }
 
     fun setMetadata(newTitle: String, newAuthors: List<String>, newProjects: List<String>, newPeople: List<String>, newArxivId: String = "") {
+        val oldMeta = _documentMeta.value
         pushUndo(UndoableAction.MetadataChanged(
-            oldTitle = _displayTitle.value,
+            oldTitle = oldMeta.title,
             newTitle = newTitle,
-            oldAuthors = _displayAuthors.value,
+            oldAuthors = oldMeta.authors,
             newAuthors = newAuthors,
-            oldProjects = _displayProjects.value,
+            oldProjects = oldMeta.projects,
             newProjects = newProjects,
-            oldPeople = _displayPeople.value,
+            oldPeople = oldMeta.people,
             newPeople = newPeople,
-            oldArxivId = _displayArxivId.value,
+            oldArxivId = oldMeta.arxivId,
             newArxivId = newArxivId
         ))
         flushPendingInkStrokes()
@@ -1647,14 +1377,14 @@ class PdfViewerViewModel(application: Application) : AndroidViewModel(applicatio
                 pdfEditor.setMetadataInDoc(uri, newTitle, newAuthors, newProjects, newPeople, newArxivId)
                 pdfRepository.syncMetadataToDb(uri, newTitle, newAuthors, newProjects, newPeople, newArxivId)
             }
-            val state = _uiState.value as? PdfViewerUiState.Ready ?: return@launchSave
             withContext(Dispatchers.Main) {
-                _displayTitle.value = newTitle
-                _displayAuthors.value = newAuthors
-                _displayProjects.value = newProjects
-                _displayPeople.value = newPeople
-                _displayArxivId.value = newArxivId
-                _uiState.value = state.copy(title = newTitle, authors = newAuthors, projects = newProjects, people = newPeople, arxivId = newArxivId)
+                _documentMeta.update { it.copy(
+                    title = newTitle,
+                    authors = newAuthors,
+                    projects = newProjects,
+                    people = newPeople,
+                    arxivId = newArxivId
+                )}
             }
         }
     }
